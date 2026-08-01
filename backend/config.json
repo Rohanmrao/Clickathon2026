@@ -4,6 +4,29 @@
     "enriched_table": "events_full",
     "hourly_table": "hourly_summary"
   },
+  "metrics": {
+    "base_events": {
+      "requests": "count(*)",
+      "fills": "sum(is_filled)",
+      "impressions": "sum(is_impression)",
+      "clicks": "sum(is_click)",
+      "revenue": "sum(revenue)"
+    },
+    "base_rollup": {
+      "requests": "sum(requests)",
+      "fills": "sum(fills)",
+      "impressions": "sum(impressions)",
+      "clicks": "sum(clicks)",
+      "revenue": "sum(revenue)"
+    },
+    "ratios": {
+      "fill_rate": ["fills", "requests"],
+      "render_rate": ["impressions", "fills"],
+      "ctr": ["clicks", "impressions"],
+      "rpr": ["revenue", "requests"]
+    },
+    "ecpm_multiplier": 1000
+  },
   "detection": {
     "grain": "hour",
     "baseline_method": "same_weekday_trailing_weeks",
@@ -23,5 +46,9 @@
   "narrator": {
     "max_sentences": 5,
     "temperature": 0.1
+  },
+  "bedrock": {
+    "region": "ap-southeast-2",
+    "model_id": "deepseek.v3.2"
   }
 }

@@ -25,3 +25,5 @@ dist/
 
 # Data — do NOT commit the big parquet (keep it local / via package)
 *.parquet
+config/clickhouse_credentials.txt
+config/clickhouse-api-key-QueryAPIKey.txt
