@@ -117,16 +117,23 @@ def list_bundles(limit: int = 50) -> dict:
 # ---------------------------------------------------------------------------
 
 def _run_investigation(slots: chatlib.Slots, session_id: str) -> EvidenceBundle:
-    """Run the pipeline for a set of filled slots.
+    """Investigate, then narrate, for a set of filled slots.
 
     Goes through the same `pipeline.run_investigation` as POST /investigate, so chat-driven
     investigations are traced and persisted identically - the session_id additionally groups
     every trace from one conversation together in Langfuse.
+
+    Chat is the one caller that DOES want the prose inline: a conversational reply with no
+    sentence in it is useless. The two-step split still holds underneath - the bundle is
+    complete and stored before narration runs, so an LLM failure costs the sentence and
+    nothing else. `narrate_investigation` returning None cannot happen here (we just wrote
+    the row), but we fall back to the un-narrated bundle rather than assume it.
     """
     window = None
     if slots.window_start:
         window = Window(start=slots.window_start, end=slots.window_end or slots.window_start)
-    return pipeline.run_investigation(slots.metric or "revenue", window, session_id=session_id)
+    bundle = pipeline.run_investigation(slots.metric or "revenue", window, session_id=session_id)
+    return pipeline.narrate_investigation(bundle.investigation_id) or bundle
 
 
 def _diagnosis_text(bundle: EvidenceBundle) -> str:
@@ -136,7 +143,9 @@ def _diagnosis_text(bundle: EvidenceBundle) -> str:
     reading the conversation should see the localized segment and what was ruled out without
     opening the dashboard.
     """
-    lines = [bundle.narrative or "(no narrative generated)"]
+    # Narration can fail (no AWS credentials, model unavailable). Say so plainly rather than
+    # printing a placeholder that reads like a broken system - the evidence below is still real.
+    lines = [bundle.narrative or "_Narration unavailable; the computed evidence follows._"]
     if bundle.localized_segment:
         segment = " AND ".join(f"{k}={v}" for k, v in bundle.localized_segment.items())
         lines.append(f"\n**Localized to:** {segment}")
