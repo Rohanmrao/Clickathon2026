@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>RCA — Dev Console</title>
+<style>
+  :root {
+    --bg:#0f1419; --panel:#171d26; --panel2:#1e2632; --line:#2a3543; --fg:#d7dee8;
+    --muted:#8595a8; --accent:#5aa9e6; --good:#3fb950; --bad:#f85149; --warn:#d29922;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.5 -apple-system,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--fg); }
+  header { padding:14px 20px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:16px; }
+  header h1 { font-size:16px; margin:0; font-weight:600; }
+  .banner { background:#3a1416; color:#ffb4ab; border:1px solid #6e2b28; padding:4px 10px; border-radius:6px; font-size:12px; font-weight:600; }
+  nav { display:flex; gap:4px; padding:0 20px; border-bottom:1px solid var(--line); background:var(--panel); }
+  nav button { background:none; border:none; color:var(--muted); padding:12px 16px; cursor:pointer; font-size:14px; border-bottom:2px solid transparent; }
+  nav button.active { color:var(--fg); border-bottom-color:var(--accent); }
+  main { padding:20px; max-width:1100px; }
+  .tab { display:none; } .tab.active { display:block; }
+  h2 { font-size:14px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); margin:24px 0 10px; }
+  h2:first-child { margin-top:0; }
+  button.act { background:var(--panel2); color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:6px 12px; cursor:pointer; font-size:13px; }
+  button.act:hover { border-color:var(--accent); }
+  button.danger { border-color:#6e2b28; color:#ffb4ab; }
+  table { width:100%; border-collapse:collapse; background:var(--panel); border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+  th,td { text-align:left; padding:8px 12px; border-bottom:1px solid var(--line); font-variant-numeric:tabular-nums; }
+  th { color:var(--muted); font-weight:600; font-size:12px; text-transform:uppercase; }
+  tr:last-child td { border-bottom:none; }
+  td.num { text-align:right; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:end; margin-bottom:14px; }
+  label { display:flex; flex-direction:column; gap:4px; font-size:12px; color:var(--muted); }
+  input,select { background:var(--panel2); border:1px solid var(--line); color:var(--fg); border-radius:6px; padding:6px 8px; font-size:13px; }
+  input.sm { width:90px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:14px; margin-top:12px; }
+  pre { background:#0b0e13; border:1px solid var(--line); border-radius:6px; padding:12px; overflow:auto; font-size:12px; max-height:340px; }
+  .pill { padding:2px 8px; border-radius:99px; font-size:12px; font-weight:600; }
+  .pill.yes { background:#123020; color:var(--good); } .pill.no { background:#2a2320; color:var(--warn); }
+  .muted { color:var(--muted); } .mono { font-family:ui-monospace,Consolas,monospace; }
+  #toast { position:fixed; bottom:20px; right:20px; background:var(--bad); color:#fff; padding:10px 14px; border-radius:8px; display:none; max-width:420px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>RCA · Dev Console</h1>
+  <span class="banner">LOCAL DEV ONLY</span>
+  <span class="muted" id="host"></span>
+</header>
+<nav>
+  <button data-tab="tables" class="active">Tables &amp; Data</button>
+  <button data-tab="runs">Runs</button>
+  <button data-tab="bench">Benchmarker</button>
+  <button data-tab="help">Help</button>
+</nav>
+<main>
+  <!-- TABLES -->
+  <section class="tab active" id="tab-tables">
+    <h2>Tables <button class="act" onclick="loadTables()">Refresh</button>
+      <button class="act danger" onclick="doLoad()">Load all data…</button></h2>
+    <table><thead><tr><th>Table</th><th class="num">Rows</th><th></th></tr></thead>
+      <tbody id="tables-body"><tr><td colspan="3" class="muted">Loading…</td></tr></tbody></table>
+    <div id="load-status"></div>
+    <div id="preview"></div>
+  </section>
+
+  <!-- RUNS -->
+  <section class="tab" id="tab-runs">
+    <h2>Investigation runs <button class="act" onclick="loadRuns()">Refresh</button></h2>
+    <table><thead><tr><th>ID</th><th>Metric</th><th>Detected</th><th>Primary factor</th><th>Created</th></tr></thead>
+      <tbody id="runs-body"><tr><td colspan="5" class="muted">Loading…</td></tr></tbody></table>
+    <div id="run-detail"></div>
+  </section>
+
+  <!-- BENCHMARKER -->
+  <section class="tab" id="tab-bench">
+    <h2>Playground — run the detector with live config overrides</h2>
+    <div class="row">
+      <label>Metric<select id="pg-metric">
+        <option>revenue</option><option>fill_rate</option><option>ctr</option>
+        <option>ecpm</option><option>rpr</option><option>render_rate</option></select></label>
+      <label>Hour (ISO)<input id="pg-at" value="2026-07-04T10:00" /></label>
+      <label>Method<select id="pg-method">
+        <option value="">(config default)</option><option value="robust_z">robust_z</option>
+        <option value="seasonal_ml">seasonal_ml</option><option value="isolation_forest">isolation_forest</option></select></label>
+      <label>IF features<select id="pg-iffeat">
+        <option value="">(default)</option><option value="univariate">univariate</option>
+        <option value="multivariate">multivariate</option></select></label>
+      <label>mad_z_threshold<input class="sm" id="pg-madz" placeholder="3.5" /></label>
+      <label>min_pct_delta<input class="sm" id="pg-pct" placeholder="0.1" /></label>
+      <button class="act" onclick="doDetect()">Run</button>
+      <button class="act" onclick="doCompare()">Compare both</button>
+    </div>
+    <div id="pg-result"></div>
+
+    <h2>Ground-truth harness <span class="muted">(detection only — localization pending JAL-77)</span>
+      <button class="act" onclick="runBench()">Run benchmark</button></h2>
+    <div id="bench-result" class="muted">Runs the 4 planted-anomaly cases through the current config.</div>
+  </section>
+
+  <!-- HELP -->
+  <section class="tab" id="tab-help">
+    <h2>What every button does</h2>
+    <table><thead><tr><th>Button</th><th>What it does</th></tr></thead><tbody>
+      <tr><td class="mono">Refresh</td><td>Reloads the table list and row counts.</td></tr>
+      <tr><td class="mono">Load all data…</td><td>Runs the full ETL (raw events → dim tables → <span class="mono">events_full</span> → <span class="mono">hourly_summary</span>). ~9M rows, takes minutes; runs in the background. Typed confirm: <span class="mono">LOAD</span>.</td></tr>
+      <tr><td class="mono">Preview</td><td>Shows the first 20 rows of a table (read-only).</td></tr>
+      <tr><td class="mono">Drop</td><td><b>Deletes</b> a table. Typed confirm: you must type the exact table name.</td></tr>
+      <tr><td class="mono">Run</td><td>Runs the detector once for your chosen metric + hour + method, applying any threshold overrides (in-memory only — <span class="mono">config.json</span> is never changed).</td></tr>
+      <tr><td class="mono">Compare both</td><td>Runs <span class="mono">robust_z</span> and <span class="mono">seasonal_ml</span> on the same input, side by side.</td></tr>
+      <tr><td class="mono">Run benchmark</td><td>Runs the 4 planted-anomaly cases (JAL-77) through the current config. Detection only for now; segment localization comes with the drill-down.</td></tr>
+    </tbody></table>
+
+    <h2>The metrics (all ratios are sum/sum over the group)</h2>
+    <table><thead><tr><th>Metric</th><th>Formula</th><th>Meaning</th></tr></thead><tbody>
+      <tr><td class="mono">revenue</td><td class="mono">sum(revenue)</td><td>Total ad revenue.</td></tr>
+      <tr><td class="mono">fill_rate</td><td class="mono">fills / requests</td><td>Share of ad requests that got an ad.</td></tr>
+      <tr><td class="mono">render_rate</td><td class="mono">impressions / fills</td><td>Share of filled ads that actually rendered.</td></tr>
+      <tr><td class="mono">ctr</td><td class="mono">clicks / impressions</td><td>Click-through rate.</td></tr>
+      <tr><td class="mono">ecpm</td><td class="mono">revenue / impressions × 1000</td><td>Revenue per 1,000 impressions.</td></tr>
+      <tr><td class="mono">rpr</td><td class="mono">revenue / requests</td><td>Revenue per ad request.</td></tr>
+    </tbody></table>
+
+    <h2>The two detectors</h2>
+    <div class="card"><b class="mono">robust_z</b> — deterministic, fully traceable (the default).<br>
+      Baseline = the <b>same weekday + hour-of-day over the trailing 3 weeks</b> (a "like-for-like"
+      comparison). It takes the <b>median</b> of those points as <i>expected</i>, measures spread with
+      <b>MAD</b>, and reports a <b>robust z-score</b>. Every number comes straight from a logged SQL query.</div>
+    <div class="card"><b class="mono">seasonal_ml</b> — unsupervised, hand-rolled. <b>No trained ML library, no saved weights.</b><br>
+      It builds a <b>seasonal profile</b>: the median of every <span class="mono">(weekday, hour-of-day)</span>
+      bucket across <b>all</b> history — that table of medians <i>is</i> the model, rebuilt each call
+      (pandas only). It then scores the target hour's <b>residual</b> (actual − seasonal) against the
+      spread of <b>all</b> residuals. Because it pools the whole history, its noise estimate is far more
+      stable than <span class="mono">robust_z</span>'s 3-point one — so it fires less on tiny moves.</div>
+    <div class="card"><b class="mono">isolation_forest</b> — an <b>actual trained ML model</b> (scikit-learn IsolationForest), unsupervised.<br>
+      Fits a forest on all historical hours and scores how easily the target hour is "isolated" (outliers
+      isolate faster → higher anomaly score). Two feature modes, toggled by the <b>IF features</b> dropdown:
+      <ul style="margin:6px 0">
+        <li><b>univariate</b> — features are <span class="mono">[value, seasonal, residual, hour, weekday]</span>
+          for the chosen metric; flags when the forest isolates it <i>and</i> the metric moved ≥ its pct floor.</li>
+        <li><b>multivariate</b> — features are the whole ratio vector
+          <span class="mono">[fill_rate, render_rate, ctr, ecpm, rpr, requests]</span>; flags hours whose
+          <i>combination</i> of metrics is unusual, even if the single metric looks normal.</li>
+      </ul>
+      Deterministic (fixed <span class="mono">random_state</span>); the feature-pull SQL is logged for traceability.</div>
+
+    <h2>What you can tweak (the knobs)</h2>
+    <table><thead><tr><th>Knob</th><th>Applies to</th><th>Meaning</th></tr></thead><tbody>
+      <tr><td class="mono">method</td><td>both</td><td>Which detector to run: <span class="mono">robust_z</span> or <span class="mono">seasonal_ml</span>.</td></tr>
+      <tr><td class="mono">mad_z_threshold</td><td>robust_z</td><td>Flag when the |z-score| ≥ this. Higher = fewer alerts. Default 3.5.</td></tr>
+      <tr><td class="mono">residual_z_threshold</td><td>seasonal_ml</td><td>Same idea, on the residual z. Default 3.5.</td></tr>
+      <tr><td class="mono">min_pct_delta</td><td>both</td><td>Ignore moves smaller than this fraction (0.1 = 10%). A floor so trivial % changes never alert.</td></tr>
+      <tr><td class="mono">mad_scale</td><td>both</td><td>1.4826 — the constant that makes MAD comparable to a standard deviation. Rarely changed.</td></tr>
+      <tr><td class="mono">baseline_weeks</td><td>robust_z</td><td>How many trailing weeks form the baseline. Default 3.</td></tr>
+      <tr><td class="mono">IF features</td><td>isolation_forest</td><td><span class="mono">univariate</span> (single metric) or <span class="mono">multivariate</span> (whole ratio vector). Toggle per run.</td></tr>
+      <tr><td class="mono">contamination</td><td>isolation_forest</td><td>Expected outlier fraction the forest uses to set its flag cutoff. Default <span class="mono">auto</span>.</td></tr>
+      <tr><td class="mono">n_estimators</td><td>isolation_forest</td><td>Number of trees in the forest. Default 200.</td></tr>
+    </tbody></table>
+
+    <h2>Reading the result</h2>
+    <table><thead><tr><th>Field</th><th>Meaning</th></tr></thead><tbody>
+      <tr><td class="mono">detected</td><td>Did it flag this hour as anomalous?</td></tr>
+      <tr><td class="mono">observed</td><td>The actual metric value this hour.</td></tr>
+      <tr><td class="mono">expected</td><td>What the baseline/seasonal model expected.</td></tr>
+      <tr><td class="mono">abs_delta / pct_delta</td><td>observed − expected, absolute and as a %.</td></tr>
+      <tr><td class="mono">score</td><td>The robust z-score — "how many robust std-devs from normal."</td></tr>
+      <tr><td class="mono">direction</td><td><span class="mono">drop</span> (below expected) or <span class="mono">spike</span> (above).</td></tr>
+      <tr><td class="mono">queries</td><td>The IDs of the SQL queries behind every number — this is the traceability trail.</td></tr>
+    </tbody></table>
+
+    <h2>Buzzword decoder</h2>
+    <table><tbody>
+      <tr><td class="mono">median</td><td>The middle value — unlike an average, one huge outlier can't drag it around.</td></tr>
+      <tr><td class="mono">MAD</td><td>Median Absolute Deviation — a robust "how spread out is the data" measure (the median of the distances from the median).</td></tr>
+      <tr><td class="mono">robust z-score</td><td>(value − center) ÷ (MAD × scale). Like a normal z-score but built from median/MAD, so outliers don't distort it.</td></tr>
+      <tr><td class="mono">like-for-like baseline</td><td>Comparing an hour only to the same weekday + hour in prior weeks — apples to apples, so weekly/daily seasonality doesn't look like an anomaly.</td></tr>
+      <tr><td class="mono">seasonal profile</td><td>The "normal" value for each weekday×hour slot, learned from history.</td></tr>
+      <tr><td class="mono">residual</td><td>What's left after subtracting the expected/seasonal value — the part a model didn't predict.</td></tr>
+      <tr><td class="mono">unsupervised</td><td>Learns "normal" from the data itself with no labelled examples of anomalies.</td></tr>
+      <tr><td class="mono">traceability</td><td>Every number can be reproduced from a named SQL query — so a judge (or you) can verify it.</td></tr>
+    </tbody></table>
+  </section>
+</main>
+<div id="toast"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+document.getElementById('host').textContent = location.origin;
+function toast(m){ const t=$('#toast'); t.textContent=m; t.style.display='block'; setTimeout(()=>t.style.display='none',4000); }
+async function api(path, opts){
+  const r = await fetch('/dev'+path, opts);
+  const body = await r.json().catch(()=>({}));
+  if(!r.ok){ toast(body.detail || ('HTTP '+r.status)); throw new Error(body.detail||r.status); }
+  return body;
+}
+function post(path, obj){ return api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(obj||{})}); }
+const esc = s => String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+
+// tabs
+document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('nav button').forEach(x=>x.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
+  b.classList.add('active'); $('#tab-'+b.dataset.tab).classList.add('active');
+  if(b.dataset.tab==='runs') loadRuns();
+});
+
+// ---- Tables ----
+async function loadTables(){
+  const {tables} = await api('/tables');
+  $('#tables-body').innerHTML = tables.map(t=>`<tr>
+    <td class="mono">${esc(t.name)}</td><td class="num">${t.rows.toLocaleString()}</td>
+    <td><button class="act" onclick="preview('${esc(t.name)}')">Preview</button>
+        <button class="act danger" onclick="dropTable('${esc(t.name)}')">Drop</button></td></tr>`).join('');
+}
+async function preview(name){
+  const {columns,rows} = await api('/table/'+encodeURIComponent(name)+'?limit=20');
+  $('#preview').innerHTML = `<div class="card"><b class="mono">${esc(name)}</b> — first ${rows.length} rows
+    <pre>${esc(columns.join('  |  '))}\n${rows.map(r=>r.join('  |  ')).join('\n')}</pre></div>`;
+}
+async function dropTable(name){
+  const c = prompt(`This DROPS "${name}". Type the table name to confirm:`);
+  if(c===null) return;
+  await post('/table/'+encodeURIComponent(name)+'/drop', {confirm:c});
+  toast('Dropped '+name); loadTables();
+}
+async function doLoad(){
+  const c = prompt('This runs the FULL 9M-row load (minutes). Type LOAD to confirm:');
+  if(c===null) return;
+  const {job_id} = await post('/load',{confirm:c});
+  $('#load-status').innerHTML = `<div class="card">Load job <span class="mono">${job_id}</span> started… <span id="job-s">running</span><pre id="job-log"></pre></div>`;
+  const poll = setInterval(async ()=>{
+    const j = await api('/jobs/'+job_id);
+    $('#job-s').textContent = j.status; $('#job-log').textContent = j.log||'';
+    if(j.finished){ clearInterval(poll); loadTables(); }
+  }, 2000);
+}
+
+// ---- Runs ----
+async function loadRuns(){
+  const {runs} = await api('/runs');
+  if(!runs.length){ $('#runs-body').innerHTML='<tr><td colspan="5" class="muted">No runs yet (pipeline not wired).</td></tr>'; return; }
+  $('#runs-body').innerHTML = runs.map(r=>`<tr onclick="runDetail('${esc(r.investigation_id)}')" style="cursor:pointer">
+    <td class="mono">${esc(String(r.investigation_id).slice(0,8))}</td><td>${esc(r.metric)}</td>
+    <td>${r.detected?'<span class="pill yes">yes</span>':'<span class="pill no">no</span>'}</td>
+    <td>${esc(r.primary_factor||'')}</td><td class="muted">${esc(r.created_at)}</td></tr>`).join('');
+}
+async function runDetail(id){
+  const b = await api('/runs/'+encodeURIComponent(id));
+  $('#run-detail').innerHTML = `<div class="card"><pre>${esc(JSON.stringify(b,null,2))}</pre></div>`;
+}
+
+// ---- Benchmarker ----
+function overrides(){
+  const o={}; const mz=$('#pg-madz').value, pc=$('#pg-pct').value, iff=$('#pg-iffeat').value;
+  if(mz) o.mad_z_threshold=parseFloat(mz); if(pc) o.min_pct_delta=parseFloat(pc);
+  if(iff) o.isolation_forest={features:iff};   // nested override; deep-merged server-side
+  return Object.keys(o).length?o:null;
+}
+function anomalyCard(res){
+  const a=res.anomaly;
+  return `<div class="card"><b>${esc(res.method)}</b>
+    ${a.detected?'<span class="pill yes">detected</span>':'<span class="pill no">normal</span>'}
+    <table style="margin-top:8px">
+    <tr><td class="muted">observed</td><td class="num">${a.observed.toFixed(4)}</td>
+        <td class="muted">expected</td><td class="num">${a.expected.toFixed(4)}</td></tr>
+    <tr><td class="muted">delta</td><td class="num">${a.abs_delta.toFixed(4)} (${(a.pct_delta*100).toFixed(1)}%)</td>
+        <td class="muted">score</td><td class="num">${a.score.toFixed(2)} ${esc(a.direction)}</td></tr></table>
+    <div class="muted mono" style="margin-top:8px">queries: ${res.queries.map(q=>esc(q.id)).join(', ')}</div></div>`;
+}
+async function doDetect(){
+  const res = await post('/detect', {metric:$('#pg-metric').value, at:$('#pg-at').value, method:$('#pg-method').value||null, overrides:overrides()});
+  $('#pg-result').innerHTML = anomalyCard(res);
+}
+async function doCompare(){
+  const {results} = await post('/compare', {metric:$('#pg-metric').value, at:$('#pg-at').value});
+  $('#pg-result').innerHTML = results.map(anomalyCard).join('');
+}
+async function runBench(){
+  $('#bench-result').textContent='Running…';
+  const {results} = await post('/benchmark/run',{method:$('#pg-method').value||null, overrides:overrides()});
+  const ran = (results.find(r=>r.method)||{}).method || 'config default';
+  $('#bench-result').innerHTML = `<div class="muted" style="margin-bottom:8px">Ran with method: <b class="mono">${esc(ran)}</b> — set it via the Method dropdown above.</div><table><thead><tr><th>Case</th><th>Metric</th><th>Target hour</th>
+    <th>Detected</th><th class="num">Score</th><th>Expected segment</th><th>Localization</th></tr></thead><tbody>${
+    results.map(r=>`<tr><td>${esc(r.id)}</td><td>${esc(r.metric)}</td><td class="muted mono">${esc(r.target||'')}</td>
+    <td>${r.error?('<span class="pill no">err</span>'):(r.detected?'<span class="pill yes">yes</span>':'<span class="pill no">no</span>')}</td>
+    <td class="num">${r.score??''}</td><td class="mono">${esc(r.expect_segment?JSON.stringify(r.expect_segment):'—')}</td>
+    <td class="muted">${esc(r.error||r.localization||'')}</td></tr>`).join('')}</tbody></table>`;
+}
+
+loadTables();
+</script>
+</body>
+</html>
