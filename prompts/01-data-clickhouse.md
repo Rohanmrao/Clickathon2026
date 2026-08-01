@@ -18,7 +18,7 @@ Four files in `InMobi/data/`:
 
 ## Your deliverables
 1. **Schema + load.** Create `ad_events` and the three dim tables in ClickHouse Cloud and load all four files. Use `LowCardinality(String)` for id/dimension columns, `DateTime` for `event_time`, `UInt8` for `is_*`, `Float64` for `revenue`. Sanity-check: 9M rows, correct date range, `NAM` present.
-2. **`events_enriched`** — a denormalized table joining the fact to all three dims, so every downstream drill-down is a single-table `GROUP BY` with no repeated joins. This is your most important deliverable for Lane B.
+2. **`events_full`** — a denormalized table joining the fact to all three dims, so every downstream drill-down is a single-table `GROUP BY` with no repeated joins. This is your most important deliverable for Lane B.
 3. **Hourly rollup** (materialized view or table): `sum(is_filled), sum(is_impression), sum(is_click), sum(revenue), count(*)` grouped by `toStartOfHour(event_time)` and **every dimension**. Downstream reads this for speed.
 4. **Shared metric SQL** — canonical snippets for fill_rate, ctr, ecpm, rpr as `sum(x)/sum(y)`. One source of truth so nobody reinvents a formula.
 5. **`run_query(sql, params) -> (rows, logged_sql, elapsed_ms)`** — a Python helper (clickhouse-connect) that runs parameterized SQL and returns the *exact resolved SQL string* so Lane B/C can drop it into `queries[]`. This is critical for the traceability score.
@@ -33,7 +33,7 @@ Four files in `InMobi/data/`:
 - Keep result sets tiny; aggregate server-side.
 
 ## Definition of done
-DB reachable from a clean checkout with creds in `.env`; `events_enriched` + hourly rollup populated and row-count-verified; `run_query` returns results **and** the logged SQL; baseline template runs and returns a sensible same-weekday baseline. Paste real output — row counts, a sample baseline — don't claim it works, show it.
+DB reachable from a clean checkout with creds in `.env`; `events_full` + hourly rollup populated and row-count-verified; `run_query` returns results **and** the logged SQL; baseline template runs and returns a sensible same-weekday baseline. Paste real output — row counts, a sample baseline — don't claim it works, show it.
 
 ## Do not
 - Don't hardcode dates, segments, or thresholds tuned to a known anomaly.

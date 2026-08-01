@@ -1,6 +1,5 @@
 -- Lane A: ClickHouse schema. Run top-to-bottom against your Cloud service.
--- Table names here match the LIVE database and config.json. Ids as LowCardinality(String);
--- is_* as UInt8; revenue Float64; NAM (not NA) for North America.
+-- Ids as LowCardinality(String); is_* as UInt8; revenue Float64; NAM (not NA) for North America.
 
 CREATE TABLE IF NOT EXISTS ad_events (
     event_time     DateTime,
@@ -41,17 +40,31 @@ ENGINE = MergeTree
 ORDER BY (event_time, country, os_version, app_id)
 AS
 SELECT
-    e.event_time, e.app_id, e.geo_device_id, e.advertiser_id, e.ad_format,
-    e.is_filled, e.is_impression, e.is_click, e.revenue,
-    a.category, a.publisher_tier,
-    adv.vertical, adv.campaign_type,
-    g.region, g.country, g.device_model, g.os_version
+    e.event_time AS event_time, e.app_id AS app_id, e.geo_device_id AS geo_device_id,
+    e.advertiser_id AS advertiser_id, e.ad_format AS ad_format,
+    e.is_filled AS is_filled, e.is_impression AS is_impression, e.is_click AS is_click,
+    e.revenue AS revenue,
+    a.category AS category, a.publisher_tier AS publisher_tier,
+    adv.vertical AS vertical, adv.campaign_type AS campaign_type,
+    g.region AS region, g.country AS country, g.device_model AS device_model, g.os_version AS os_version
 FROM ad_events e
 LEFT JOIN apps_dim a USING (app_id)
 LEFT JOIN advertisers_dim adv USING (advertiser_id)
 LEFT JOIN geo_device_dim g USING (geo_device_id);
 
--- Advanced hourly rollup (metrics_hourly_advanced): raw sums + zero-safe ratio columns.
--- NOT created here — it is built from config + the shared metric formulas so there is one
--- definition, not a copy that can drift. Rebuild it any time with:
---     python -m data.build_advanced
+-- Hourly rollup for fast baselines/detection. Ratios stay sum/sum at read time.
+CREATE TABLE IF NOT EXISTS hourly_summary
+ENGINE = SummingMergeTree
+ORDER BY (hour, region, country, os_version, device_model, ad_format, category, publisher_tier, vertical, campaign_type, app_id, advertiser_id)
+AS
+SELECT
+    toStartOfHour(event_time) AS hour,
+    region, country, os_version, device_model, ad_format,
+    category, publisher_tier, vertical, campaign_type, app_id, advertiser_id,
+    count()            AS requests,
+    sum(is_filled)     AS fills,
+    sum(is_impression) AS impressions,
+    sum(is_click)      AS clicks,
+    sum(revenue)       AS revenue
+FROM events_full
+GROUP BY ALL;

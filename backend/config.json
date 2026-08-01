@@ -2,8 +2,7 @@
   "clickhouse": {
     "events_table": "ad_events",
     "enriched_table": "events_full",
-    "hourly_table": "metrics_hourly_advanced",
-    "sample_table": "events_sample"
+    "hourly_table": "hourly_summary"
   },
   "metrics": {
     "base_events": {

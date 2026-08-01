@@ -26,7 +26,7 @@ Read [`AGENTS.md`](../AGENTS.md) for the full diagram. The **Evidence Bundle** (
 
 | # | Milestone | What "done" means | Primary lane |
 |---|---|---|---|
-| M1 | **Data & DB** | Parquet+CSVs in ClickHouse; `events_enriched` + hourly rollup; helper to run+log SQL | A |
+| M1 | **Data & DB** | Parquet+CSVs in ClickHouse; `events_full` + hourly rollup; helper to run+log SQL | A |
 | M2 | **Detection** | Given a metric+window, robust like-for-like baseline says "real move, score X, direction Y" | B |
 | M3 | **RCA engine** | Factor decomposition + recursive contribution drill-down → full Evidence Bundle incl. `ruled_out` | B (+A) |
 | M4 | **Narrator + Telemetry** | Langfuse trace of the whole run; LLM diagnosis with hallucination guardrail; ruled-out surfaced | C |
@@ -56,7 +56,7 @@ M3 is the heart. M2→M3→M4 is the critical path. M1 unblocks everything; M5 r
 - Read the problem statement + glossary. Agree metric formulas.
 
 ### Phase 1 — Parallel vertical slices (T+1 → T+7)
-- **A:** load all four files; build `events_enriched` + hourly rollup; ship `run_query(sql, params) -> (rows, logged_sql)` helper. **Deliver a working DB by T+3** — B is blocked without it.
+- **A:** load all four files; build `events_full` + hourly rollup; ship `run_query(sql, params) -> (rows, logged_sql)` helper. **Deliver a working DB by T+3** — B is blocked without it.
 - **B:** prototype detection + one level of contribution drill-down as raw SQL in the ClickHouse console against real data; port to Python; start emitting a partial bundle.
 - **C:** against the fixture bundle — Langfuse tracing scaffold, narrator prompt + guardrail, FastAPI `/investigate` returning the bundle. Swap in real pipeline later.
 - **D:** against the fixture bundle — metric tree, diagnosis card, ruled-out card, trace link. No backend dependency.

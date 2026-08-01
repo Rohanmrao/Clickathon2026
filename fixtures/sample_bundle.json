@@ -69,17 +69,17 @@
   "queries": [
     {
       "id": "q_02",
-      "sql": "SELECT quantileExact(0.5)(revenue_hourly) FROM metrics_hourly WHERE toDayOfWeek(hour)=6 AND toHour(hour)=10 AND hour < {target_start:DateTime}",
+      "sql": "SELECT quantileExact(0.5)(revenue_hourly) FROM hourly_summary WHERE toDayOfWeek(hour)=6 AND toHour(hour)=10 AND hour < {target_start:DateTime}",
       "result_summary": { "baseline_revenue": 90120.0 }
     },
     {
       "id": "q_03",
-      "sql": "SELECT sum(requests) FROM metrics_hourly WHERE hour BETWEEN {target_start:DateTime} AND {target_end:DateTime}",
+      "sql": "SELECT sum(requests) FROM hourly_summary WHERE hour BETWEEN {target_start:DateTime} AND {target_end:DateTime}",
       "result_summary": { "requests": 5098000 }
     },
     {
       "id": "q_10",
-      "sql": "SELECT country, (sum(is_filled)/count(*)) AS fill_rate FROM events_enriched WHERE hour BETWEEN {target_start:DateTime} AND {target_end:DateTime} GROUP BY country ORDER BY (baseline_fill - fill_rate) DESC",
+      "sql": "SELECT country, (sum(is_filled)/count(*)) AS fill_rate FROM events_full WHERE hour BETWEEN {target_start:DateTime} AND {target_end:DateTime} GROUP BY country ORDER BY (baseline_fill - fill_rate) DESC",
       "result_summary": { "top": { "country": "IN", "fill_rate": 0.55 } }
     }
   ],

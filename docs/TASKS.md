@@ -23,7 +23,7 @@ Assign owners at kickoff. Keep this file updated — it's our single source of t
 - [ ] Define `ad_events` schema (types: `event_time DateTime`, `is_* UInt8`, `revenue Float64`, ids as `LowCardinality(String)`) **(BLOCKER)**
 - [ ] Load `ad_events.parquet` (9M) + `apps.csv` + `advertisers.csv` + `geo_device.csv`
 - [ ] Sanity checks: row count = 9M, date range Jun 1–Jul 5 2026, `NAM` present (not `NA`), empty `advertiser_id` on unfilled
-- [ ] Build **`events_enriched`** — denormalized fact + all dims flattened (single table for drill-downs) **(BLOCKER for B)**
+- [ ] Build **`events_full`** — denormalized fact + all dims flattened (single table for drill-downs) **(BLOCKER for B)**
 - [ ] Build **hourly rollup** (MV or table): sums of requests/fills/impr/clicks/revenue grouped by hour + every dimension
 - [ ] Shared metric SQL snippets (fill_rate, ctr, ecpm, rpr as sum/sum) — one source of truth
 - [ ] `run_query(sql, params) -> (rows, logged_sql, elapsed)` helper that returns the exact SQL for `queries[]` **(BLOCKER for B & C)**

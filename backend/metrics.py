@@ -5,7 +5,7 @@ Two flavors, matching the architecture:
   * Python compute -> ratios over ALREADY-AGGREGATED components (never over raw event rows).
 
 Formulas follow InMobi/metrics_glossary.md; column mappings come from config.json["metrics"].
-`source` selects the columns: "events" (raw events_full rows) or "rollup" (the hourly rollup).
+`source` selects the columns: "events" (raw events_enriched) or "rollup" (metrics_hourly).
 """
 from __future__ import annotations
 
