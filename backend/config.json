@@ -1,9 +1,8 @@
 {
   "clickhouse": {
     "events_table": "ad_events",
-    "enriched_table": "events_enriched",
-    "hourly_table": "metrics_hourly",
-    "sample_table": "events_sample"
+    "enriched_table": "events_full",
+    "hourly_table": "hourly_summary"
   },
   "detection": {
     "grain": "hour",

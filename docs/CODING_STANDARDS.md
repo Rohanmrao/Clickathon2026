@@ -38,7 +38,7 @@ Every rule below serves this. If you're ever unsure, optimize for *a judge being
 
 ## SQL / ClickHouse
 
-- **Read against `events_enriched`** (denormalized fact+dims) so drill-downs are single-table `GROUP BY` — no repeated joins in the recursion.
+- **Read against `events_full`** (denormalized fact+dims) so drill-downs are single-table `GROUP BY` — no repeated joins in the recursion.
 - **Ratio metrics = sum/sum.** Bake this into shared SQL snippets so no one reinvents fill rate.
 - **Baselines are like-for-like.** Same weekday + hour-of-day over trailing weeks, robust (median/MAD). A `toDayOfWeek()` / `toHour()` bucketed comparison — never `avg()` over the whole history.
 - **Every query is named and logged.** Give it an id (`q_03`), log the exact SQL + params. That string goes into the bundle *and* the Langfuse span. This is non-negotiable — it's the traceability score.

@@ -20,7 +20,7 @@ Deterministic SQL does 100% of the analysis and produces every number. The LLM o
   Parquet + CSVs
         │  (load once)
         ▼
-  ClickHouse Cloud  ──  events_enriched (denormalized fact+dims) + hourly rollup
+  ClickHouse Cloud  ──  events_full (denormalized fact+dims) + hourly rollup
         │
         ▼
   Detection        ──  same-weekday/hour baseline, robust z-score → is this a real move?
@@ -58,7 +58,7 @@ Everything hinges on **[`contracts/evidence_bundle.schema.json`](contracts/evide
 
 | Lane | Owner | Deliverable | System prompt |
 |---|---|---|---|
-| **A — Data & ClickHouse** | | schema, load, `events_enriched`, rollups, query helpers | [`prompts/01-data-clickhouse.md`](prompts/01-data-clickhouse.md) |
+| **A — Data & ClickHouse** | | schema, load, `events_full`, rollups, query helpers | [`prompts/01-data-clickhouse.md`](prompts/01-data-clickhouse.md) |
 | **B — Detection & RCA** | | baseline detection + factor decomposition + drill-down → Evidence Bundle | [`prompts/02-detection-rca.md`](prompts/02-detection-rca.md) |
 | **C — Narrator & Orchestration** | | Langfuse tracing, LLM narrator + guardrail, FastAPI | [`prompts/03-narrator-orchestration.md`](prompts/03-narrator-orchestration.md) |
 | **D — Dashboard** | | metric tree, diagnosis + ruled-out panels, chat, trace link | [`prompts/04-dashboard.md`](prompts/04-dashboard.md) |
