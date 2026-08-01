@@ -26,6 +26,7 @@ from data import store
 from data.client import get_client, run_query
 from models import Window
 from rca import drilldown
+from rca.bundle import build_bundle
 from rca.detection import detect
 
 _HTML = Path(__file__).resolve().parent / "dev_dashboard.html"
@@ -276,6 +277,45 @@ def _run_mega_job(job_id: str, hours_per_case: int) -> None:
         _JOBS[job_id].update(status="error", finished=True, log=str(exc))
 
 
+# ---- full engine: build_bundle per case (the real end-to-end EvidenceBundle) ----
+
+def run_engine_benchmark() -> list[dict]:
+    """Run the WHOLE engine (build_bundle) per ground-truth case and summarize each bundle.
+
+    Method-independent (build_bundle uses the incident scanner + deterministic decompose/drill), so
+    it's one bundle per case — the end-to-end artifact, not just detect/drill."""
+    out = []
+    for case in benchmark_cases():
+        window = _case_window(case["window"])
+        try:
+            b = build_bundle(case["metric"], window)
+            out.append({
+                "id": case["id"], "metric": case["metric"],
+                "detected": b.anomaly.detected, "score": round(b.anomaly.score, 2),
+                "primary_factor": b.factor_decomposition.primary_factor,
+                "localized": b.localized_segment, "hit": b.localized_segment == (case["expect_segment"] or {}),
+                "ruled_out": [r.hypothesis for r in b.ruled_out], "n_queries": len(b.queries),
+            })
+        except Exception as exc:  # noqa: BLE001
+            out.append({"id": case["id"], "metric": case["metric"], "error": str(exc)})
+    return out
+
+
+def start_engine_job() -> dict:
+    job_id = uuid4().hex[:8]
+    _JOBS[job_id] = {"status": "running", "log": "", "finished": False, "result": None}
+    threading.Thread(target=_run_engine_job, args=(job_id,), daemon=True).start()
+    return {"job_id": job_id}
+
+
+def _run_engine_job(job_id: str) -> None:
+    try:
+        rows = run_engine_benchmark()
+        _JOBS[job_id].update(status="done", finished=True, result={"rows": rows}, log=f"{len(rows)} bundles")
+    except Exception as exc:  # noqa: BLE001
+        _JOBS[job_id].update(status="error", finished=True, log=str(exc))
+
+
 # ---- router (thin wrapper; ValueError -> 400) ------------------------------
 
 router = APIRouter(prefix="/dev", tags=["dev"])
@@ -394,3 +434,8 @@ class MegaReq(BaseModel):
 @router.post("/mega")
 def mega_endpoint(req: MegaReq) -> dict:
     return start_mega_job(req.hours_per_case)  # background job; poll /dev/jobs/{id} for result
+
+
+@router.post("/engine")
+def engine_endpoint() -> dict:
+    return start_engine_job()  # background job; poll /dev/jobs/{id} for result

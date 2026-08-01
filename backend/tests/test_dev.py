@@ -122,6 +122,30 @@ def test_run_detect_reports_score_kind():
     assert "score_kind" in r
 
 
+def test_run_engine_benchmark_summarizes_each_bundle():
+    from types import SimpleNamespace
+
+    def fake_build_bundle(metric, window):
+        return SimpleNamespace(
+            anomaly=SimpleNamespace(detected=True, score=1.234),
+            factor_decomposition=SimpleNamespace(primary_factor="fill_rate"),
+            localized_segment={"os_version": "Android 15"},
+            ruled_out=[SimpleNamespace(hypothesis="ecpm_price")],
+            queries=[1, 2, 3, 4, 5],
+        )
+
+    with patch.object(dev, "build_bundle", fake_build_bundle):
+        rows = dev.run_engine_benchmark()
+    assert len(rows) == 4
+    a = next(r for r in rows if r["id"] == "A")
+    assert a["primary_factor"] == "fill_rate"
+    assert a["localized"] == {"os_version": "Android 15"}
+    assert a["hit"] is True                       # matches case A ground truth
+    assert a["ruled_out"] == ["ecpm_price"]
+    assert a["n_queries"] == 5
+    assert next(r for r in rows if r["id"] == "B")["hit"] is False
+
+
 def test_run_mega_produces_rows_and_summary():
     def fake_run_detect(metric, at, method=None, overrides=None):
         return {"method": method or "robust_z", "anomaly": {"detected": True, "score": 0.5}, "queries": []}
