@@ -88,7 +88,7 @@ def _baseline_sql(expr: str, where_sql: str, dim: str | None = None) -> str:
 def _build_stat(segment: dict, observed: float, series: list[float]) -> Stat:
     center = med(series)
     spread = mad(series, center)
-    z = robust_z(observed, center, spread)
+    z = robust_z(observed, center, spread, _DET["mad_scale"])
     pct = pct_delta(observed, center)
     return Stat(
         segment=segment, observed=observed, expected=center, mad=spread,
