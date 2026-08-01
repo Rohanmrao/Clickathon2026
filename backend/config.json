@@ -39,6 +39,14 @@
       "season_keys": ["weekday", "hour"],
       "residual_z_threshold": 3.5,
       "min_pct_delta": 0.05
+    },
+    "isolation_forest": {
+      "features": "univariate",
+      "feature_columns": ["fill_rate", "render_rate", "ctr", "ecpm", "rpr", "requests"],
+      "n_estimators": 200,
+      "contamination": "auto",
+      "random_state": 42,
+      "min_pct_delta": 0.05
     }
   },
   "rca": {

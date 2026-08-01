@@ -77,6 +77,24 @@ def test_detect_applies_override_then_restores_config():
     assert out["anomaly"]["detected"] is True
 
 
+def test_detect_deep_merges_nested_override_and_restores():
+    seen = {}
+
+    def fake_detect(metric, window):
+        d = config()["detection"]["isolation_forest"]
+        seen["features"] = d["features"]
+        seen["n_estimators"] = d["n_estimators"]  # sibling key must survive the nested override
+        return Anomaly(detected=False, observed=1, expected=1, abs_delta=0, pct_delta=0, score=0, direction="spike"), []
+
+    before = copy.deepcopy(config()["detection"])
+    with patch.object(dev, "detect", fake_detect):
+        dev.run_detect("revenue", "2026-07-04T10:00", method="isolation_forest",
+                       overrides={"isolation_forest": {"features": "multivariate"}})
+    assert seen["features"] == "multivariate"    # nested override applied
+    assert seen["n_estimators"] == 200           # ...without clobbering siblings (deep merge)
+    assert config()["detection"] == before       # fully restored
+
+
 def test_benchmark_cases_returns_the_four_ground_truth_cases():
     cases = dev.benchmark_cases()
     assert {c["id"] for c in cases} == {"A", "B", "C", "D"}

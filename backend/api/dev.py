@@ -99,6 +99,15 @@ def job_status(job_id: str) -> dict:
 
 # ---- benchmarker: playground ----------------------------------------------
 
+def _deep_merge(dst: dict, src: dict) -> None:
+    """Recursive merge so a nested override (e.g. isolation_forest.features) keeps sibling keys."""
+    for key, val in src.items():
+        if isinstance(val, dict) and isinstance(dst.get(key), dict):
+            _deep_merge(dst[key], val)
+        else:
+            dst[key] = val
+
+
 def run_detect(metric: str, at: str, method: str | None = None, overrides: dict | None = None) -> dict:
     """Run detect() with IN-MEMORY config overrides, restoring config afterward (never writes disk)."""
     start = datetime.fromisoformat(at)
@@ -108,7 +117,7 @@ def run_detect(metric: str, at: str, method: str | None = None, overrides: dict 
         if method:
             det["method"] = method
         if overrides:
-            det.update(overrides)
+            _deep_merge(det, overrides)
         anomaly, queries = detect(metric, Window(start=start, end=start + timedelta(hours=1)))
     finally:
         det.clear()
