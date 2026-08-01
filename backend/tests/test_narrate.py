@@ -33,12 +33,12 @@ def wired(monkeypatch, bundle):
     def fake_load(_id):
         return bundle if _id == "inv-1" else None
 
-    def fake_trace_id(_id):
+    def fake_meta(_id):
         state["loaded_trace"] = _id
-        return "trace-xyz"
+        return "trace-xyz", "ctx-session-7"
 
     def fake_save(b, trace_id=None, session_id=None):
-        state["saved"].append({"bundle": b, "trace_id": trace_id})
+        state["saved"].append({"bundle": b, "trace_id": trace_id, "session_id": session_id})
 
     class FakeSpan:
         def __init__(self):
@@ -56,7 +56,7 @@ def wired(monkeypatch, bundle):
         yield span
 
     monkeypatch.setattr("api.pipeline.store.load_bundle", fake_load)
-    monkeypatch.setattr("api.pipeline.store.load_trace_id", fake_trace_id)
+    monkeypatch.setattr("api.pipeline.store.load_meta", fake_meta)
     monkeypatch.setattr("api.pipeline.store.save_bundle", fake_save)
     monkeypatch.setattr("api.pipeline.narration_span", fake_span)
     return state
@@ -162,6 +162,18 @@ def test_narrated_bundle_is_persisted(wired, monkeypatch):
 
     assert wired["saved"][0]["bundle"].narrative == "done"
     assert wired["saved"][0]["trace_id"] == "trace-xyz"
+
+
+def test_narrating_preserves_the_session_link(wired, monkeypatch):
+    """Regression: investigations is a ReplacingMergeTree keyed on investigation_id, so a save
+    that omits session_id replaces the row with an empty one rather than leaving it alone.
+    That silently unlinked every chat-driven investigation from its conversation, and
+    GET /chat/sessions/{id} then reported no investigations at all."""
+    _stub_llm(monkeypatch)
+
+    pipeline.narrate_investigation("inv-1")
+
+    assert wired["saved"][0]["session_id"] == "ctx-session-7"
 
 
 # ---- HTTP ------------------------------------------------------------------
