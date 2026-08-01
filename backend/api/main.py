@@ -248,3 +248,59 @@ def chat_completions(
     if req.stream:
         return StreamingResponse(_sse(payload), media_type="text/event-stream")
     return payload
+
+
+# ---------------------------------------------------------------------------
+# Session management (JAL-84). Mostly operational: a clean slate before a demo
+# run, and the ability to replay an earlier conversation.
+# ---------------------------------------------------------------------------
+
+@app.get("/chat/sessions")
+def list_chat_sessions(limit: int = 100, turns: int = 20) -> dict:
+    """Past conversations, newest first, each with its message history.
+
+    History is included rather than requiring a second call per session, because the only
+    real use for this list is reading back what was asked and answered.
+    """
+    sessions = store.list_sessions(limit)
+    for session in sessions:
+        session["history"] = store.get_turns(session["context_id"], turns)
+    return {"count": len(sessions), "sessions": sessions}
+
+
+@app.get("/chat/sessions/{context_id}")
+def get_chat_session(context_id: str, turns: int = 50) -> dict:
+    """One conversation with its turns, plus any investigations it produced.
+
+    The investigation ids are what make a replayed conversation useful: each one resolves
+    through GET /bundle/{id} to the evidence behind that answer.
+    """
+    history = store.get_turns(context_id, turns)
+    investigations = [i for i in store.list_investigations(200)
+                      if i.get("session_id") == context_id]
+    if not history and not investigations:
+        raise HTTPException(status_code=404, detail=f"No session {context_id!r}")
+    return {
+        "context_id": context_id,
+        "turns": len(history),
+        "history": history,
+        "investigations": [i["investigation_id"] for i in investigations],
+    }
+
+
+@app.delete("/chat/sessions/{context_id}")
+def delete_chat_session(context_id: str) -> dict:
+    """Remove one conversation and its turns. 404 if it was never there."""
+    if not store.delete_session(context_id):
+        raise HTTPException(status_code=404, detail=f"No session {context_id!r}")
+    return {"context_id": context_id, "deleted": True}
+
+
+@app.delete("/chat/sessions")
+def delete_all_chat_sessions() -> dict:
+    """Clear every conversation — the clean slate before a judged demo run.
+
+    Investigations are deliberately left alone: they are the evidence record, and losing them
+    would break GET /bundle/{id} for anything already submitted.
+    """
+    return {"deleted": store.delete_all_sessions()}
