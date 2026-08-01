@@ -6,7 +6,7 @@ in `queries`. narrative / trace_url are filled later by Lane C.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from models import EvidenceBundle, Window
 from rca.decomposition import decompose
@@ -15,6 +15,10 @@ from rca.drilldown import drill
 
 
 def build_bundle(metric: str, target: Window) -> EvidenceBundle:
+    # TODO(JAL-37): finish the assembler. detect/decompose/drill are live, but this still needs a
+    # real baseline window + window discovery + ruled_out. Raise here (not just inside the helper)
+    # so api.pipeline.engine_status() honestly reports 'fixture' until JAL-37 lands.
+    raise NotImplementedError("build_bundle assembly pending JAL-37")
     anomaly, q_detect = detect(metric, target)
     baseline = _baseline_window(target)
     factors, q_decomp = decompose(metric, target, baseline)
@@ -23,7 +27,7 @@ def build_bundle(metric: str, target: Window) -> EvidenceBundle:
     # TODO(Lane B): assemble ruled_out[] (flat factors + explicit checks) with query_ids.
     return EvidenceBundle(
         investigation_id=str(uuid.uuid4()),
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
         metric=metric,
         target_window=target,
         baseline_window=_baseline_descriptor(),
