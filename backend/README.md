@@ -5,6 +5,10 @@ Python backend for the automated RCA analyst: **data** (ClickHouse), **RCA**, **
 > Run every command from **`backend/`**. Running from the repo root lets the root `config/` folder
 > shadow `backend/config.py`, breaking imports.
 
+> **Just want to run things?** After the one-time [Setup](#setup-once), use the
+> [`oneclick/`](oneclick/README.md) launchers — no venv activation, no long commands:
+> `.\backend\oneclick\detect.ps1`, `.\backend\oneclick\compare.ps1`, `.\backend\oneclick\test.ps1`.
+
 ## Coming from .NET? Quick mental model
 | Python thing | .NET equivalent |
 |---|---|
