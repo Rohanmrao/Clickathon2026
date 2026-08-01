@@ -86,15 +86,20 @@ def _fill_rate_history(target_value):
     return {D(2): 0.784, D(9): 0.786, D(16): 0.785, D(23): target_value}
 
 
+# 0.03 mirrors the real calibrated fill_rate floor measured in data/calibration.py testing
+# (docs/TEST_CASES.md) — a plain number here since score_buckets is DB-free by design.
+_FILL_RATE_EFFECT = 0.03
+
+
 def test_bucket_with_no_history_is_skipped_not_crashed():
-    scored = inc.score_buckets({D(2): 0.78}, {D(2): 100}, [D(2)], weeks=3)
+    scored = inc.score_buckets({D(2): 0.78}, {D(2): 100}, [D(2)], weeks=3, calibrated_effect=_FILL_RATE_EFFECT)
 
     assert scored == []
 
 
 def test_scored_bucket_carries_direction_inputs():
     values = _fill_rate_history(0.428)
-    scored = inc.score_buckets(values, {D(23): 27370}, [D(23)], weeks=3)
+    scored = inc.score_buckets(values, {D(23): 27370}, [D(23)], weeks=3, calibrated_effect=_FILL_RATE_EFFECT)
 
     assert len(scored) == 1
     bucket = scored[0]
@@ -106,7 +111,7 @@ def test_scored_bucket_carries_direction_inputs():
 
 def test_flat_series_is_not_flagged():
     values = {D(2): 0.784, D(9): 0.786, D(16): 0.785, D(23): 0.7851}
-    scored = inc.score_buckets(values, {D(23): 27000}, [D(23)], weeks=3)
+    scored = inc.score_buckets(values, {D(23): 27000}, [D(23)], weeks=3, calibrated_effect=_FILL_RATE_EFFECT)
 
     assert scored[0].detected is False
 

@@ -1,0 +1,13 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "rca-backend",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "uvicorn", "api.main:app", "--port", "8000"],
+      "cwd": "backend",
+      "port": 8000,
+      "url": "http://localhost:8000"
+    }
+  ]
+}
