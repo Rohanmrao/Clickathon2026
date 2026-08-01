@@ -52,6 +52,24 @@ def engine_status() -> str:
     return "live"
 
 
+def engine_mode() -> str:
+    """What /health should report: 'live', 'fixture', or 'offline'.
+
+    engine_status() only probes whether Lane B's code is implemented — it says 'live' even when
+    ClickHouse is unreachable, and then every investigation 500s. Splitting the datastore check
+    out is what lets the dashboard show 'engine offline' (bad/missing CLICKHOUSE_*) instead of
+    blanking:
+        live    — engine implemented AND ClickHouse reachable
+        fixture — engine still stubbed (serves the sample bundle by design)
+        offline — engine ready but the datastore is unreachable (serves the sample, no persist)
+    """
+    if engine_status() != "live":
+        return "fixture"
+    from data.client import clickhouse_available
+
+    return "live" if clickhouse_available() else "offline"
+
+
 def _fixture_bundle(investigation_id: str, metric: str, window: Window | None) -> EvidenceBundle:
     bundle = EvidenceBundle.model_validate(json.loads(FIXTURE.read_text()))
     bundle.investigation_id = investigation_id
@@ -72,19 +90,28 @@ def run_investigation(
     show real numbers in ~2s, and so an LLM failure cannot destroy an otherwise complete and
     scoreable bundle.
     """
+    from data.client import clickhouse_available
+
     investigation_id = str(uuid.uuid4())
 
+    # 'live' needs BOTH the engine implemented and a reachable ClickHouse. When the datastore is
+    # down we serve the fixture and skip persistence rather than 500 — the same honest fallback
+    # engine_status already gives a stubbed engine, extended to a data outage (bad CLICKHOUSE_*).
+    data_up = clickhouse_available()
+    live = engine_status() == "live" and data_up
+
     with investigation_trace(investigation_id, metric, session_id) as trace:
-        if engine_status() == "live":
+        if live:
             from rca.bundle import build_bundle
 
             bundle = build_bundle(metric, window)
             bundle.investigation_id = investigation_id
         else:
+            reason = "datastore offline" if engine_status() == "live" else "engine stubbed (JAL-76/79)"
             log.warning(
-                "RCA engine not implemented (JAL-76/79) - serving FIXTURE data for "
-                "investigation %s. Numbers are not computed from ClickHouse.",
-                investigation_id,
+                "Serving FIXTURE data for investigation %s - %s. Numbers are not computed "
+                "from ClickHouse.",
+                investigation_id, reason,
             )
             bundle = _fixture_bundle(investigation_id, metric, window)
 
@@ -97,7 +124,9 @@ def run_investigation(
 
         bundle.created_at = datetime.now()
         bundle.trace_url = trace.url
-        store.save_bundle(bundle, trace_id=trace.trace_id, session_id=session_id)
+        # Only persist when the datastore is reachable; an offline run is in-memory only.
+        if data_up:
+            store.save_bundle(bundle, trace_id=trace.trace_id, session_id=session_id)
 
     return bundle
 

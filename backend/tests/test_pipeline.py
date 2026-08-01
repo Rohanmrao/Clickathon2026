@@ -144,3 +144,34 @@ def test_fixture_fallback_is_announced(traced, saved, caplog):
         pipeline.run_investigation("revenue")
 
     assert any("FIXTURE" in r.message.upper() for r in caplog.records)
+
+
+# ---- fail-soft when the datastore is unreachable (bad/missing CLICKHOUSE_*) ----
+
+def test_engine_mode_reports_offline_when_datastore_down(monkeypatch):
+    """engine implemented + ClickHouse unreachable => 'offline', not 'live' (which would 500)."""
+    monkeypatch.setattr("api.pipeline.engine_status", lambda: "live")
+    monkeypatch.setattr("data.client.clickhouse_available", lambda: False)
+
+    assert pipeline.engine_mode() == "offline"
+
+
+def test_engine_mode_reports_live_when_engine_and_datastore_up(monkeypatch):
+    monkeypatch.setattr("api.pipeline.engine_status", lambda: "live")
+    monkeypatch.setattr("data.client.clickhouse_available", lambda: True)
+
+    assert pipeline.engine_mode() == "live"
+
+
+def test_offline_serves_fixture_without_persisting(traced, saved, monkeypatch, caplog):
+    """A datastore outage degrades to the sample bundle instead of raising — and does NOT try to
+    persist (which would itself hit the dead ClickHouse)."""
+    monkeypatch.setattr("api.pipeline.engine_status", lambda: "live")
+    monkeypatch.setattr("data.client.clickhouse_available", lambda: False)
+
+    with caplog.at_level("WARNING"):
+        bundle = pipeline.run_investigation("revenue")
+
+    assert isinstance(bundle, EvidenceBundle)
+    assert saved == []  # nothing written while offline
+    assert any("FIXTURE" in r.message.upper() for r in caplog.records)

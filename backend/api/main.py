@@ -21,10 +21,10 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from api import chat as chatlib
-from api import pipeline
+from api import dev, pipeline
 from config import LANGFUSE
-from api import dev
 from data import store
+from data.client import clickhouse_available
 from models import EvidenceBundle, Window
 
 app = FastAPI(title="Automated Root-Cause Analyst")
@@ -52,7 +52,7 @@ def health() -> dict:
     """
     return {
         "ok": True,
-        "engine": pipeline.engine_status(),          # live | fixture
+        "engine": pipeline.engine_mode(),            # live | fixture | offline
         "langfuse": {
             "enabled": bool(LANGFUSE["public_key"]),
             "host": LANGFUSE["host"],
@@ -95,6 +95,9 @@ def get_bundle(investigation_id: str) -> EvidenceBundle:
     This is how a judge re-reads an investigation after the fact, and it is the
     submission artifact path for the unseen incident.
     """
+    # Fail soft: a datastore outage returns 503 with a clear reason, not a raw 500 stacktrace.
+    if not clickhouse_available():
+        raise HTTPException(status_code=503, detail="Investigation store offline (check CLICKHOUSE_*)")
     bundle = store.load_bundle(investigation_id)
     if bundle is None:
         raise HTTPException(status_code=404, detail=f"No investigation {investigation_id!r}")
@@ -107,9 +110,14 @@ def list_bundles(limit: int = 50) -> dict:
 
     Lets the dashboard show past runs and lets a judge see what the system has
     investigated without pulling every bundle body.
+
+    Fails soft: when the datastore is unreachable (e.g. CLICKHOUSE_* unset in a container) this
+    returns an empty history with engine:"offline" rather than 500-ing and blanking the dashboard.
     """
+    if not clickhouse_available():
+        return {"count": 0, "investigations": [], "engine": "offline"}
     rows = store.list_investigations(limit)
-    return {"count": len(rows), "investigations": rows}
+    return {"count": len(rows), "investigations": rows, "engine": "live"}
 
 
 # ---------------------------------------------------------------------------

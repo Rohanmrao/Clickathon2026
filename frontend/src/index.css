@@ -709,3 +709,50 @@ body {
   .ruled-grid { grid-template-columns: 1fr; }
   .topbar { flex-wrap: wrap; }
 }
+
+/* --- frontend<->backend wiring: metric/window controls + history panel --- */
+.controls { display: inline-flex; align-items: center; gap: var(--base-6); }
+.controls select,
+.controls input {
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-caption-1);
+  color: var(--content-display-text-body-main);
+  background: var(--bg-elevated);
+  border: var(--hairline) solid var(--border-neutral-default);
+  border-radius: var(--all-radius-xs);
+  padding: var(--base-6) var(--base-8);
+}
+.controls input[type="date"] { width: 132px; }
+.history-list { display: flex; flex-direction: column; gap: var(--base-4); margin-top: var(--group-gap-s); }
+.history-row {
+  display: flex; align-items: center; gap: var(--base-8);
+  padding: var(--base-6) var(--base-8);
+  border: var(--hairline) solid var(--border-neutral-default);
+  border-radius: var(--all-radius-xs);
+  background: var(--bg-surface); cursor: pointer;
+  font-size: var(--font-size-caption-1);
+}
+.history-row:hover { border-color: var(--content-neutral-bright); }
+.history-row .hr-metric { font-family: var(--font-family-mono); color: var(--content-display-text-body-main); }
+.history-row .hr-seg { margin-left: auto; font-family: var(--font-family-mono); color: var(--content-display-text-caption-dimmed); }
+.history-empty { color: var(--content-display-text-caption-dimmed); font-size: var(--font-size-caption-1); margin-top: var(--group-gap-s); }
+
+/* Datastore-offline strip: engine reachable but ClickHouse down — results are sample data. */
+.offline-banner {
+  display: flex; align-items: center; gap: var(--base-8);
+  margin: var(--base-12) var(--all-padding-xl) 0;
+  padding: var(--base-8) var(--base-12);
+  border: var(--hairline) solid var(--border-negative-default);
+  background: var(--bg-negative-bright-default);
+  border-radius: var(--all-radius-xs);
+  color: var(--content-display-text-body-main);
+  font-size: var(--font-size-caption-1);
+}
+.offline-banner code {
+  font-family: var(--font-family-mono);
+  color: var(--content-display-text-caption-dimmed);
+}
+.offline-dot {
+  flex: none; width: var(--base-8); height: var(--base-8);
+  border-radius: 50%; background: var(--content-negative-main);
+}

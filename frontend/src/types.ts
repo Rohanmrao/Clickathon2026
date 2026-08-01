@@ -47,3 +47,26 @@ export interface EvidenceBundle {
   narrative?: string | null;
   trace_url?: string | null;
 }
+
+// GET /health — is the RCA engine running the real pipeline, serving the fixture, or is the
+// datastore unreachable (offline: engine ready but ClickHouse down — results are sample data)?
+export interface Health {
+  ok: boolean;
+  engine: "live" | "fixture" | "offline";
+  langfuse: { enabled: boolean; host: string };
+}
+
+// GET /bundles — flattened investigation rows for the history panel.
+export interface InvestigationRow {
+  investigation_id: string;
+  created_at: string;
+  metric: string;
+  window_start: string;
+  window_end: string;
+  primary_factor: string;
+  localized_segment: string; // JSON string
+  detected: number; // 0 | 1
+  narrated: number; // 0 | 1
+  trace_id?: string;
+  session_id?: string;
+}

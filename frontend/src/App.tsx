@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { investigate } from "./api";
+import { getBundle, getHealth, investigate, listBundles, narrate } from "./api";
 import sampleBundle from "./sample_bundle.json";
 import { AnomalyCard } from "./components/AnomalyCard";
 import { DiagnosisCard } from "./components/DiagnosisCard";
@@ -7,17 +7,24 @@ import { FactorSplit } from "./components/FactorSplit";
 import { MetricTree } from "./components/MetricTree";
 import { RuledOutPanel } from "./components/RuledOutPanel";
 import { FollowUpChat } from "./components/FollowUpChat";
-import type { EvidenceBundle } from "./types";
+import type { EvidenceBundle, InvestigationRow } from "./types";
+
+const METRICS = ["revenue", "fill_rate", "ecpm", "requests", "ctr", "rpr", "render_rate"];
 
 export default function App() {
   const [bundle, setBundle] = useState<EvidenceBundle>(sampleBundle as EvidenceBundle);
   const [source, setSource] = useState<"fixture" | "live">("fixture");
+  const [engine, setEngine] = useState<"live" | "fixture" | "offline" | null>(null); // from /health
   const [running, setRunning] = useState(false);
   const [step, setStep] = useState<number>(99); // drill-down reveal cursor
   const [activePanel, setActivePanel] = useState<"both" | "diagnosis" | "factor">("both");
   const [theme, setTheme] = useState<"dark" | "light">(
     () => (localStorage.getItem("rca-theme") as "dark" | "light") || "dark"
   );
+  const [metric, setMetric] = useState<string>((sampleBundle as EvidenceBundle).metric || "revenue");
+  const [winStart, setWinStart] = useState("");
+  const [winEnd, setWinEnd] = useState("");
+  const [history, setHistory] = useState<InvestigationRow[]>([]);
   const timer = useRef<number | undefined>(undefined);
 
   // Theme lives on <body> so page backgrounds (not just cards) follow variables-final.css.
@@ -31,31 +38,75 @@ export default function App() {
   const depth = bundle.drilldown.length + 1; // + root
   const pctLabel = `${bundle.anomaly.pct_delta < 0 ? "−" : "+"}${Math.abs(bundle.anomaly.pct_delta * 100).toFixed(1)}%`;
 
-  // Replay: dim every drill-down step, then reveal them one at a time.
-  const replay = () => {
+  const refreshHistory = () => listBundles(15).then(setHistory);
+
+  // On mount: report the real engine status and load past investigations.
+  useEffect(() => {
+    getHealth().then((h) => h && setEngine(h.engine));
+    refreshHistory();
+    return () => window.clearInterval(timer.current);
+  }, []);
+
+  // Reveal the drill-down one node at a time so the localization reads as a search, not a jump.
+  const revealSteps = (b: EvidenceBundle) => {
     window.clearInterval(timer.current);
-    setRunning(true);
     setStep(0);
-    investigate(bundle.metric || "revenue").then((b) => {
-      setBundle(b);
-      setSource(b === (sampleBundle as EvidenceBundle) ? "fixture" : "live");
-    });
+    const d = b.drilldown.length + 1;
     timer.current = window.setInterval(() => {
       setStep((s) => {
         const next = s + 1;
-        if (next >= depth) {
+        if (next >= d) {
           window.clearInterval(timer.current);
           setRunning(false);
-          return depth;
+          return d;
         }
         return next;
       });
     }, 620);
   };
 
-  useEffect(() => () => window.clearInterval(timer.current), []);
+  // Run: investigate (numbers) -> reveal drill-down -> narrate (prose arrives after, per the
+  // investigate/narrate split). A window is sent only if both dates are set, else the backend
+  // discovers the anomalous window itself.
+  const run = async () => {
+    setRunning(true);
+    const win = winStart && winEnd ? { start: `${winStart}T00:00:00`, end: `${winEnd}T00:00:00` } : undefined;
+    const { bundle: b, live } = await investigate(metric, win);
+    setBundle(b);
+    setSource(live ? "live" : "fixture");
+    revealSteps(b);
+    if (live && b.investigation_id) {
+      const narrated = await narrate(b.investigation_id);
+      if (narrated) setBundle(narrated); // fills the Diagnosis card
+    }
+    getHealth().then((h) => h && setEngine(h.engine)); // reflect offline/live after the run
+    refreshHistory();
+  };
+
+  // Re-open a stored investigation from the history list (already narrated, fully revealed).
+  const openRun = async (id: string) => {
+    const b = await getBundle(id);
+    if (b) {
+      window.clearInterval(timer.current);
+      setBundle(b);
+      setMetric(b.metric);
+      setSource("live");
+      setRunning(false);
+      setStep(99);
+    }
+  };
 
   const stepLabel = running ? `drilling ${Math.min(step + 1, depth)}/${depth}` : `depth ${depth} · localized`;
+  const engineLabel = engine ? `engine · ${engine}` : "clickhouse · —";
+  const segOf = (row: InvestigationRow) => {
+    try {
+      const s = JSON.parse(row.localized_segment || "{}");
+      const keys = Object.keys(s);
+      return keys.length ? keys.map((k) => `${k}=${s[k]}`).join(" ∧ ") : "—";
+    } catch {
+      return "—";
+    }
+  };
 
   return (
     <div className="app spacing-default effect-smooth">
@@ -65,7 +116,7 @@ export default function App() {
           <div className="brand-titles">
             <span className="brand-name">RCA analyst</span>
             <span className="brand-sub">
-              {source === "live" ? "live · /investigate" : "fixtures/sample_bundle.json"} · incident inc_4471
+              {source === "live" ? "live · /investigate" : "fixtures/sample_bundle.json"} · {bundle.investigation_id.slice(0, 8)}
             </span>
           </div>
         </div>
@@ -86,22 +137,37 @@ export default function App() {
               </svg>
             )}
           </button>
-          <span className="status-pill"><span className="live-dot" /> clickhouse · 41ms</span>
+          <span className="status-pill"><span className="live-dot" /> {engineLabel}</span>
+          <div className="controls">
+            <select value={metric} onChange={(e) => setMetric(e.target.value)} aria-label="Metric">
+              {METRICS.map((m) => <option key={m} value={m}>{m}</option>)}
+            </select>
+            <input type="date" value={winStart} onChange={(e) => setWinStart(e.target.value)} aria-label="Window start" />
+            <input type="date" value={winEnd} onChange={(e) => setWinEnd(e.target.value)} aria-label="Window end" />
+          </div>
           {bundle.trace_url && (
             <a className="ghost-btn" href={bundle.trace_url} target="_blank" rel="noreferrer">Open trace</a>
           )}
-          <button className="primary-btn" onClick={replay} disabled={running}>
-            {running ? "Replaying…" : "Replay incident"}
+          <button className="primary-btn" onClick={run} disabled={running}>
+            {running ? "Investigating…" : "Investigate"}
           </button>
         </div>
       </header>
+
+      {engine === "offline" && (
+        <div className="offline-banner" role="status">
+          <span className="offline-dot" /> Data store offline — showing sample data. Check
+          <code> CLICKHOUSE_* </code> in <code>.env</code>, then recreate the backend
+          (<code>docker compose up -d backend</code>).
+        </div>
+      )}
 
       <main className="main-grid">
         <section className="col-left">
           <AnomalyCard
             metric={bundle.metric}
             anomaly={bundle.anomaly}
-            confidence={bundle.anomaly.score ? Math.min(0.99, bundle.anomaly.score / 5) : undefined}
+            confidence={bundle.anomaly.score ? Math.min(0.99, Math.abs(bundle.anomaly.score) / 5) : undefined}
             running={running}
           />
           <div
@@ -166,6 +232,26 @@ export default function App() {
                     <span key={k} className="chip">{k} = {v}</span>
                   ))}
                 </div>
+              </div>
+            )}
+          </section>
+
+          <section className="card">
+            <div className="eyebrow-row">
+              <span className="eyebrow">Past investigations</span>
+              <button className="chat-icon-btn" onClick={refreshHistory} aria-label="Refresh history">↻</button>
+            </div>
+            {history.length === 0 ? (
+              <div className="history-empty">No stored investigations yet — run one.</div>
+            ) : (
+              <div className="history-list">
+                {history.map((row) => (
+                  <div key={row.investigation_id} className="history-row" onClick={() => openRun(row.investigation_id)}>
+                    <span className="hr-metric">{row.metric}</span>
+                    <span className={row.detected ? "culprit-badge" : "dim"}>{row.detected ? "detected" : "flat"}</span>
+                    <span className="hr-seg">{segOf(row)}</span>
+                  </div>
+                ))}
               </div>
             )}
           </section>
