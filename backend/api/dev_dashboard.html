@@ -93,7 +93,7 @@
     </div>
     <div id="pg-result"></div>
 
-    <h2>Ground-truth harness <span class="muted">(detection only — localization pending JAL-77)</span>
+    <h2>Ground-truth harness <span class="muted">(detection = chosen method · localization = drill-down)</span>
       <button class="act" onclick="runBench()">Run benchmark</button></h2>
     <div id="bench-result" class="muted">Runs the 4 planted-anomaly cases through the current config.</div>
   </section>
@@ -108,7 +108,7 @@
       <tr><td class="mono">Drop</td><td><b>Deletes</b> a table. Typed confirm: you must type the exact table name.</td></tr>
       <tr><td class="mono">Run</td><td>Runs the detector once for your chosen metric + hour + method, applying any threshold overrides (in-memory only — <span class="mono">config.json</span> is never changed).</td></tr>
       <tr><td class="mono">Compare both</td><td>Runs <span class="mono">robust_z</span> and <span class="mono">seasonal_ml</span> on the same input, side by side.</td></tr>
-      <tr><td class="mono">Run benchmark</td><td>Runs the 4 planted-anomaly cases (JAL-77) through the current config. Detection only for now; segment localization comes with the drill-down.</td></tr>
+      <tr><td class="mono">Run benchmark</td><td>Runs the 4 planted-anomaly cases (JAL-77). <b>Detected</b> = the chosen method's verdict at a sample hour (global). <b>Localized</b> = the drill-down's segment over the whole window, scored PASS/FAIL vs ground truth. The two are independent — localization runs regardless of whether detection fired.</td></tr>
     </tbody></table>
 
     <h2>The metrics (all ratios are sum/sum over the group)</h2>
