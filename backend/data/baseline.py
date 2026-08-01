@@ -21,6 +21,7 @@ METRIC_COLUMNS: dict[str, tuple[str, str | None]] = {
     "impressions": ("impressions", None),
     "revenue": ("revenue", None),
     "fill_rate": ("fills", "requests"),
+    "render_rate": ("impressions", "fills"),
     "ctr": ("clicks", "impressions"),
     "ecpm": ("revenue", "impressions"),  # x1000 applied after the divide
     "rpr": ("revenue", "requests"),

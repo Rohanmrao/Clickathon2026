@@ -35,6 +35,21 @@
     "baseline_weeks": 3,
     "mad_z_threshold": 3.5,
     "min_pct_delta": 0.1,
+    "effect_multiplier": 8,
+    "effect_multiplier_overrides": {
+      "ctr": 15
+    },
+    "min_effect_pct": {
+      "fill_rate": 0.03,
+      "render_rate": 0.03,
+      "requests": 0.10,
+      "revenue": 0.15,
+      "rpr": 0.15,
+      "impressions": 0.10,
+      "ecpm": 0.15,
+      "ctr": 0.40,
+      "_default": 0.10
+    },
     "seasonal_ml": {
       "season_keys": ["weekday", "hour"],
       "residual_z_threshold": 3.5,
@@ -57,6 +72,7 @@
     ],
     "stop_contribution_threshold": 0.5,
     "min_lift": 1.5,
+    "min_gap_noise_multiple": 2.0,
     "max_depth": 4,
     "baseline_weeks": 2
   },

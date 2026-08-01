@@ -25,14 +25,18 @@ from config import config, env
 from data import store
 from data.client import get_client, run_query
 from models import Window
-from rca import drilldown
+from rca import drilldown, incidents
 from rca.bundle import build_bundle
-from rca.detection import detect
+from rca.detection import detect, detect_in_window
 
 _HTML = Path(__file__).resolve().parent / "dev_dashboard.html"
 _CASES = Path(__file__).resolve().parent / "benchmark_cases.json"
 
 _JOBS: dict[str, dict] = {}  # process-local load-job registry
+
+# Drill-down is the expensive part (a query per dimension per level), so only the top-ranked
+# incidents get localised — the tail is almost always echoes of the same event.
+_DISCOVER_LOCALIZE_TOP = 8
 
 
 def dev_enabled() -> bool:
@@ -122,22 +126,36 @@ def _score_kind(method: str) -> str:
     return _SCORE_KIND.get(method, method)
 
 
-def run_detect(metric: str, at: str, method: str | None = None, overrides: dict | None = None) -> dict:
-    """Run detect() with IN-MEMORY config overrides, restoring config afterward (never writes disk)."""
+def run_detect(metric: str, at: str, method: str | None = None, overrides: dict | None = None,
+               segment_aware: bool = False) -> dict:
+    """Run detection with IN-MEMORY config overrides, restoring config afterward (never writes disk).
+
+    segment_aware=False scores only the GLOBAL aggregate. That is blind to a localised anomaly by
+    construction — the APAC x iOS 18.1 fill_rate drop is -51% in-segment but only -1.2% globally,
+    so every detector scores 0 on it regardless of quality. segment_aware=True adds the second
+    phase (per-dimension scan when the global pass finds nothing), which is what takes the
+    ground-truth harness from 3/5 cases to 5/5. See rca.detection.detect_in_window.
+    """
     start = datetime.fromisoformat(at)
+    window = Window(start=start, end=start + timedelta(hours=1))
     det = config()["detection"]
     snapshot = copy.deepcopy(det)
+    segment: dict = {}
     try:
         if method:
             det["method"] = method
         if overrides:
             _deep_merge(det, overrides)
-        anomaly, queries = detect(metric, Window(start=start, end=start + timedelta(hours=1)))
+        if segment_aware:
+            anomaly, queries, _, segment = detect_in_window(metric, window, method)
+        else:
+            anomaly, queries = detect(metric, window)
     finally:
         det.clear()
         det.update(snapshot)
     resolved = method or snapshot["method"]
-    return {"method": resolved, "score_kind": _score_kind(resolved), "anomaly": anomaly.model_dump(), "queries": queries}
+    return {"method": resolved, "score_kind": _score_kind(resolved), "anomaly": anomaly.model_dump(),
+            "queries": queries, "found_in_segment": segment}
 
 
 def run_compare(metric: str, at: str) -> list[dict]:
@@ -173,12 +191,52 @@ def localize(metric: str, start: str, end: str) -> dict:
     return {"localized": localized, "path": [n.model_dump() for n in path], "queries": queries}
 
 
+def discover(start: str, end: str, grain: str = "day", scope: str = "both", min_effect: float = 0.02) -> dict:
+    """Find anomalies in an ARBITRARY window — no ground-truth case list involved.
+
+    This is what the fixed benchmark cases can't do: point it at any date range (e.g. the
+    unseen-incident slice) and let it sweep. Two scopes, because they catch different things:
+
+      global   — rca.incidents.scan_incidents: one series per metric. Catches anomalies big
+                 enough to move the population (Jun 21 collapse, Jun 23-25 fill_rate).
+      segment  — rca.incidents.scan_segments: every value of every low-cardinality dimension.
+                 Catches anomalies that are severe inside a segment but diluted globally —
+                 the APAC/iOS 18.1 fill_rate drop moves the global figure only -1.2% and is
+                 invisible to a global-only sweep.
+
+    Each incident is then run through the drill-down to name the responsible segment.
+    """
+    window_start, window_end = datetime.fromisoformat(start), datetime.fromisoformat(end)
+    found: list[dict] = []
+
+    if scope in ("global", "both"):
+        for inc in incidents.scan_incidents(window_start, window_end, grain=grain, min_effect=min_effect).incidents:
+            found.append({**inc.as_dict(), "scope": "global"})
+    if scope in ("segment", "both"):
+        for inc in incidents.scan_segments(window_start, window_end, grain=grain, min_effect=min_effect).incidents:
+            found.append({**inc.as_dict(), "scope": "segment"})
+
+    found.sort(key=lambda r: r["score"], reverse=True)
+    for row in found[:_DISCOVER_LOCALIZE_TOP]:
+        base_metric = row["metric"].split("[")[0]
+        try:
+            window = Window(start=datetime.fromisoformat(row["window_start"]),
+                            end=datetime.fromisoformat(row["window_end"]))
+            _, localized, _ = drilldown.drill(base_metric, base_metric, window, drilldown.baseline_window(window))
+            row["localized"] = localized
+        except Exception as exc:  # noqa: BLE001
+            row["localized"] = {"error": str(exc)}
+    return {"window": {"start": start, "end": end, "grain": grain, "scope": scope},
+            "count": len(found), "incidents": found}
+
+
 def run_benchmark(method: str | None = None, overrides: dict | None = None) -> list[dict]:
     """Detect (chosen method) AND localise (drill-down) each case; score both vs ground truth."""
     out = []
     for case in benchmark_cases():
         try:
-            det = run_detect(case["metric"], _case_target(case["window"]).isoformat(), method=method, overrides=overrides)
+            det = run_detect(case["metric"], _case_target(case["window"]).isoformat(),
+                             method=method, overrides=overrides, segment_aware=True)
             window = _case_window(case["window"])
             _, localized, _ = drilldown.drill(case["metric"], case["metric"], window, drilldown.baseline_window(window))
             expected = case["expect_segment"] or {}
@@ -236,7 +294,8 @@ def run_mega(hours_per_case: int = 3) -> dict:
             detected, scores = 0, []
             for hour in hours:
                 try:
-                    r = run_detect(case["metric"], hour.isoformat(), method=variant["method"], overrides=variant["overrides"])
+                    r = run_detect(case["metric"], hour.isoformat(), method=variant["method"],
+                                   overrides=variant["overrides"], segment_aware=True)
                     detected += 1 if r["anomaly"]["detected"] else 0
                     scores.append(r["anomaly"]["score"])
                 except Exception:  # noqa: BLE001, S110 -- a failed hour just doesn't count
@@ -320,6 +379,24 @@ def _run_engine_job(job_id: str) -> None:
     try:
         rows = run_engine_benchmark()
         _JOBS[job_id].update(status="done", finished=True, result={"rows": rows}, log=f"{len(rows)} bundles")
+    except Exception as exc:  # noqa: BLE001
+        _JOBS[job_id].update(status="error", finished=True, log=str(exc))
+
+
+def start_discover_job(start: str, end: str, grain: str, scope: str, min_effect: float) -> dict:
+    """A full segment sweep is ~50 queries (a metric x dimension pass each), so run it in the
+    background like /mega rather than holding the request open."""
+    job_id = uuid4().hex[:8]
+    _JOBS[job_id] = {"status": "running", "log": "", "finished": False, "result": None}
+    threading.Thread(target=_run_discover_job, args=(job_id, start, end, grain, scope, min_effect), daemon=True).start()
+    return {"job_id": job_id}
+
+
+def _run_discover_job(job_id: str, start: str, end: str, grain: str, scope: str, min_effect: float) -> None:
+    try:
+        result = discover(start, end, grain, scope, min_effect)
+        _JOBS[job_id].update(status="done", finished=True, result=result,
+                             log=f"{result['count']} incidents in {start}..{end}")
     except Exception as exc:  # noqa: BLE001
         _JOBS[job_id].update(status="error", finished=True, log=str(exc))
 
@@ -433,6 +510,20 @@ def benchmark_run_endpoint(req: BenchmarkReq) -> dict:
 @router.post("/localize")
 def localize_endpoint(req: LocalizeReq) -> dict:
     return _guard(localize, req.metric, req.start, req.end)
+
+
+class DiscoverReq(BaseModel):
+    start: str = "2026-06-01"
+    end: str = "2026-07-06"
+    grain: str = "day"
+    scope: str = "both"          # global | segment | both
+    min_effect: float = 0.02
+
+
+@router.post("/discover")
+def discover_endpoint(req: DiscoverReq) -> dict:
+    # background job; poll /dev/jobs/{id} for the result
+    return start_discover_job(req.start, req.end, req.grain, req.scope, req.min_effect)
 
 
 class MegaReq(BaseModel):
