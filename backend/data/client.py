@@ -7,6 +7,7 @@ from typing import Any
 import clickhouse_connect
 
 from config import CLICKHOUSE
+from obs import langfuse
 
 
 def get_client():
@@ -20,12 +21,36 @@ def get_client():
     )
 
 
-def run_query(sql: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+def run_query(
+    sql: str, params: dict[str, Any] | None = None, name: str = "clickhouse-query"
+) -> dict[str, Any]:
     """Run parameterized SQL. Returns {rows, columns, resolved_sql, elapsed_ms}.
 
     resolved_sql is what belongs in EvidenceBundle.queries[].sql — the traceability record.
+    Each call is wrapped in a Langfuse span (input=SQL, output=result summary); when Langfuse
+    is enabled the returned dict also carries langfuse_span_id for EvidenceBundle.queries[].
     """
     params = params or {}
+    lf = langfuse()
+    if lf is None:
+        return _execute(sql, params)
+
+    with lf.start_as_current_observation(name=name, as_type="span") as span:
+        out = _execute(sql, params)
+        span.update(
+            input=out["resolved_sql"],
+            output={
+                "row_count": len(out["rows"]),
+                "columns": out["columns"],
+                "sample": out["rows"][:5],
+            },
+            metadata={"elapsed_ms": round(out["elapsed_ms"], 1)},
+        )
+        out["langfuse_span_id"] = span.id
+    return out
+
+
+def _execute(sql: str, params: dict[str, Any]) -> dict[str, Any]:
     started = time.perf_counter()
     result = get_client().query(sql, parameters=params)
     elapsed_ms = (time.perf_counter() - started) * 1000
