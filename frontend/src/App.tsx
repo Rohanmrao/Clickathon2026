@@ -8,6 +8,7 @@ import { MetricTree } from "./components/MetricTree";
 import { RuledOutPanel } from "./components/RuledOutPanel";
 import { SidebarDock } from "./components/SidebarDock";
 import { ClickathonMark } from "./components/ClickathonMark";
+import { DateField } from "./components/DateField";
 import type { EvidenceBundle, InvestigationRow } from "./types";
 
 const METRICS = ["revenue", "fill_rate", "ecpm", "requests", "ctr", "rpr", "render_rate"];
@@ -29,9 +30,11 @@ export default function App() {
   const timer = useRef<number | undefined>(undefined);
 
   // Theme lives on <body> so page backgrounds (not just cards) follow variables-final.css.
+  // color-scheme keeps native controls (select, scrollbars) in sync with light/dark.
   useEffect(() => {
     document.body.classList.remove("light-theme", "dark-theme");
     document.body.classList.add(`${theme}-theme`);
+    document.body.style.colorScheme = theme;
     localStorage.setItem("rca-theme", theme);
   }, [theme]);
 
@@ -143,8 +146,8 @@ export default function App() {
             <select value={metric} onChange={(e) => setMetric(e.target.value)} aria-label="Metric">
               {METRICS.map((m) => <option key={m} value={m}>{m}</option>)}
             </select>
-            <input type="date" value={winStart} onChange={(e) => setWinStart(e.target.value)} aria-label="Window start" />
-            <input type="date" value={winEnd} onChange={(e) => setWinEnd(e.target.value)} aria-label="Window end" />
+            <DateField value={winStart} onChange={setWinStart} aria-label="Window start" />
+            <DateField value={winEnd} onChange={setWinEnd} aria-label="Window end" />
           </div>
           {bundle.trace_url && (
             <a className="ghost-btn" href={bundle.trace_url} target="_blank" rel="noreferrer">Open trace</a>

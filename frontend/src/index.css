@@ -808,8 +808,7 @@ body {
 
 /* --- frontend<->backend wiring: metric/window controls + history panel --- */
 .controls { display: inline-flex; align-items: center; gap: var(--base-6); }
-.controls select,
-.controls input {
+.controls select {
   font-family: var(--font-family-mono);
   font-size: var(--font-size-caption-1);
   color: var(--content-display-text-body-main);
@@ -818,7 +817,179 @@ body {
   border-radius: var(--all-radius-xs);
   padding: var(--base-6) var(--base-8);
 }
-.controls input[type="date"] { width: 132px; }
+
+/* Themed date field — replaces native <input type="date"> so the calendar
+   popover follows light/dark tokens instead of the browser chrome. */
+.date-field { position: relative; }
+.date-field-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--group-gap-l);
+  min-width: var(--base-140);
+  padding: var(--base-6) var(--base-8);
+  border: var(--hairline) solid var(--border-neutral-default);
+  border-radius: var(--all-radius-xs);
+  background: var(--bg-elevated);
+  color: var(--content-display-text-body-main);
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-caption-1);
+  line-height: var(--line-height-caption-1);
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.date-field-trigger:hover {
+  border-color: var(--border-neutral-activated);
+  background: var(--bg-neutral-bright-hovered);
+}
+.date-field.is-open .date-field-trigger {
+  border-color: var(--border-secondary-activated);
+  background: var(--bg-secondary-bright-default);
+}
+.date-field-value { color: var(--content-display-text-body-main); }
+.date-field-placeholder { color: var(--content-display-text-caption-dimmed); }
+.date-field-icon {
+  width: var(--icon-m);
+  height: var(--icon-m);
+  flex: none;
+  color: var(--content-display-text-caption-dimmed);
+}
+.date-field.is-open .date-field-icon { color: var(--content-secondary-main); }
+
+.date-popover {
+  position: fixed;
+  z-index: 80;
+  width: var(--base-268);
+  padding: var(--all-padding-xs);
+  border: var(--hairline) solid var(--border-neutral-activated);
+  border-radius: var(--all-radius-s);
+  background: var(--bg-elevated);
+  color: var(--content-display-text-body-main);
+  box-shadow:
+    0 var(--shadow-y-s) var(--shadow-blur-s) 0 var(--shadow-base),
+    0 var(--shadow-y-m) var(--shadow-blur-m) 0 var(--shadow-spread);
+  animation: date-pop 0.14s ease-out;
+}
+@keyframes date-pop {
+  from { opacity: 0; transform: translateY(calc(var(--base-4) * -1)); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.date-popover-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--group-gap-l);
+  margin-bottom: var(--all-gap-s);
+  padding: 0 var(--base-2);
+}
+.date-popover-month {
+  font-family: var(--font-family-common);
+  font-size: var(--font-size-body-2);
+  font-weight: 600;
+  color: var(--content-display-text-title-main);
+}
+.date-popover-nav { display: inline-flex; gap: var(--base-2); }
+.date-nav-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--base-28);
+  height: var(--base-28);
+  padding: 0;
+  border: none;
+  border-radius: var(--all-radius-xs);
+  background: transparent;
+  color: var(--content-display-text-caption-main);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.date-nav-btn svg { width: var(--icon-m); height: var(--icon-m); display: block; }
+.date-nav-btn:hover {
+  background: var(--bg-dimmed);
+  color: var(--content-display-text-title-main);
+}
+
+.date-weekdays {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: var(--base-2);
+  margin-bottom: var(--base-4);
+}
+.date-weekdays span {
+  text-align: center;
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-caption-2);
+  line-height: var(--line-height-caption-2);
+  color: var(--content-display-text-caption-dimmed);
+  padding: var(--base-2) 0;
+}
+
+.date-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: var(--base-2);
+}
+.date-day {
+  aspect-ratio: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: var(--hairline) solid transparent;
+  border-radius: var(--all-radius-xs);
+  background: transparent;
+  color: var(--content-display-text-body-main);
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-caption-1);
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+.date-day:hover {
+  background: var(--bg-dimmed);
+  color: var(--content-display-text-title-main);
+}
+.date-day.is-outside { color: var(--content-display-text-caption-dimmed); opacity: 0.55; }
+.date-day.is-today {
+  border-color: var(--border-secondary-activated);
+  color: var(--content-secondary-main);
+}
+.date-day.is-selected {
+  background: var(--bg-secondary-default);
+  border-color: var(--border-secondary-activated);
+  color: var(--on-accent);
+  font-weight: 600;
+  opacity: 1;
+}
+.date-day.is-selected:hover {
+  background: var(--bg-secondary-hovered);
+  color: var(--on-accent);
+}
+
+.date-popover-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: var(--all-gap-s);
+  padding-top: var(--all-gap-s);
+  border-top: var(--hairline) solid var(--border-neutral-default);
+}
+.date-foot-btn {
+  padding: var(--base-4) var(--base-6);
+  border: none;
+  border-radius: var(--all-radius-xs);
+  background: transparent;
+  color: var(--content-secondary-main);
+  font-family: var(--font-family-common);
+  font-size: var(--font-size-caption-1);
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.date-foot-btn:hover {
+  background: var(--bg-secondary-bright-default);
+  color: var(--content-secondary-bright);
+}
 .history-list { display: flex; flex-direction: column; gap: var(--base-4); margin-top: var(--group-gap-s); }
 .history-row {
   display: flex; align-items: center; gap: var(--base-8);
