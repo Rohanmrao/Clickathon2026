@@ -191,7 +191,8 @@ def localize(metric: str, start: str, end: str) -> dict:
     return {"localized": localized, "path": [n.model_dump() for n in path], "queries": queries}
 
 
-def discover(start: str, end: str, grain: str = "day", scope: str = "both", min_effect: float = 0.02) -> dict:
+def discover(start: str, end: str, grain: str = "day", scope: str = "both", min_effect: float = 0.0,
+            method: str = "robust_z") -> dict:
     """Find anomalies in an ARBITRARY window — no ground-truth case list involved.
 
     This is what the fixed benchmark cases can't do: point it at any date range (e.g. the
@@ -204,30 +205,56 @@ def discover(start: str, end: str, grain: str = "day", scope: str = "both", min_
                  the APAC/iOS 18.1 fill_rate drop moves the global figure only -1.2% and is
                  invisible to a global-only sweep.
 
+    `method` (robust_z / seasonal_ml / isolation_forest) selects the detector for the GLOBAL
+    pass only — see rca.incidents.scan_incidents_with_method for why. Segment localization
+    always uses the calibrated robust_z path regardless of `method`, because that is the only
+    one vectorized to scan every segment cheaply; a non-default method costs one DB round trip
+    per bucket instead of one per metric, so it is opt-in, not the default.
+
     Each incident is then run through the drill-down to name the responsible segment.
     """
     window_start, window_end = datetime.fromisoformat(start), datetime.fromisoformat(end)
-    found: list[dict] = []
+    raw: list[incidents.Incident] = []
+    scopes: dict[int, str] = {}
 
     if scope in ("global", "both"):
-        for inc in incidents.scan_incidents(window_start, window_end, grain=grain, min_effect=min_effect).incidents:
-            found.append({**inc.as_dict(), "scope": "global"})
+        global_result = incidents.scan_incidents_with_method(window_start, window_end, method, grain=grain)
+        for inc in global_result.incidents:
+            raw.append(inc); scopes[id(inc)] = "global"
     if scope in ("segment", "both"):
         for inc in incidents.scan_segments(window_start, window_end, grain=grain, min_effect=min_effect).incidents:
-            found.append({**inc.as_dict(), "scope": "segment"})
+            raw.append(inc); scopes[id(inc)] = "segment"
 
-    found.sort(key=lambda r: r["score"], reverse=True)
-    for row in found[:_DISCOVER_LOCALIZE_TOP]:
-        base_metric = row["metric"].split("[")[0]
+    # Label echoes before drilling, so the expensive drill-down is spent on distinct findings
+    # rather than on the ~120 rows that are all the same Jun 21 collapse seen per segment.
+    found = incidents.classify_echoes(raw)
+    by_key = {(i.metric, i.window_start.isoformat()): scopes[id(i)] for i in raw}
+    for row in found:
+        row["scope"] = by_key.get((row["metric"], row["window_start"]), "segment")
+
+    primaries = [r for r in found if r["role"] == "primary"]
+    for row in primaries[:_DISCOVER_LOCALIZE_TOP]:
         try:
             window = Window(start=datetime.fromisoformat(row["window_start"]),
                             end=datetime.fromisoformat(row["window_end"]))
-            _, localized, _ = drilldown.drill(base_metric, base_metric, window, drilldown.baseline_window(window))
+            metric = incidents.base_metric(row["metric"])
+            _, localized, _ = drilldown.drill(metric, metric, window, drilldown.baseline_window(window))
             row["localized"] = localized
         except Exception as exc:  # noqa: BLE001
             row["localized"] = {"error": str(exc)}
-    return {"window": {"start": start, "end": end, "grain": grain, "scope": scope},
-            "count": len(found), "incidents": found}
+
+    # Two more folds, run AFTER localization (fold_revenue_identity needs `localized` to match
+    # a global factor finding like fill_rate back to the segment it was drilled to). Neither is
+    # visible to classify_echoes, which only knows "same metric, overlapping window" — these
+    # catch "different metric, same underlying cause" (the revenue identity) and "different
+    # metric, but this segment's whole sample got noisier because volume collapsed that day".
+    incidents.fold_revenue_identity(found)
+    incidents.fold_volume_driven_noise(found)
+    incidents.fold_contained_same_metric(found)
+    primary_count = sum(1 for r in found if r["role"] == "primary")
+
+    return {"window": {"start": start, "end": end, "grain": grain, "scope": scope, "method": method},
+            "count": len(found), "primary_count": primary_count, "incidents": found}
 
 
 def run_benchmark(method: str | None = None, overrides: dict | None = None) -> list[dict]:
@@ -388,15 +415,16 @@ def start_discover_job(start: str, end: str, grain: str, scope: str, min_effect:
     background like /mega rather than holding the request open."""
     job_id = uuid4().hex[:8]
     _JOBS[job_id] = {"status": "running", "log": "", "finished": False, "result": None}
-    threading.Thread(target=_run_discover_job, args=(job_id, start, end, grain, scope, min_effect), daemon=True).start()
+    threading.Thread(target=_run_discover_job, args=(job_id, start, end, grain, scope, min_effect, method), daemon=True).start()
     return {"job_id": job_id}
 
 
-def _run_discover_job(job_id: str, start: str, end: str, grain: str, scope: str, min_effect: float) -> None:
+def _run_discover_job(job_id: str, start: str, end: str, grain: str, scope: str, min_effect: float,
+                      method: str = "robust_z") -> None:
     try:
-        result = discover(start, end, grain, scope, min_effect)
+        result = discover(start, end, grain, scope, min_effect, method)
         _JOBS[job_id].update(status="done", finished=True, result=result,
-                             log=f"{result['count']} incidents in {start}..{end}")
+                             log=f"{result['count']} incidents in {start}..{end} ({method})")
     except Exception as exc:  # noqa: BLE001
         _JOBS[job_id].update(status="error", finished=True, log=str(exc))
 
@@ -513,17 +541,22 @@ def localize_endpoint(req: LocalizeReq) -> dict:
 
 
 class DiscoverReq(BaseModel):
+    """Time window + detector choice. Grain, scope, and sensitivity are still decided
+    server-side (discover() defaults) — nobody should have to hand-tune a detection dial to
+    get an answer. `method` is the one model-comparison knob worth exposing: it picks which
+    detector scores the GLOBAL pass (robust_z / seasonal_ml / isolation_forest). Segment
+    localization is unaffected — see discover()'s docstring for why."""
     start: str = "2026-06-01"
     end: str = "2026-07-06"
-    grain: str = "day"
-    scope: str = "both"          # global | segment | both
-    min_effect: float = 0.02
+    method: str = "robust_z"
 
 
 @router.post("/discover")
 def discover_endpoint(req: DiscoverReq) -> dict:
-    # background job; poll /dev/jobs/{id} for the result
-    return start_discover_job(req.start, req.end, req.grain, req.scope, req.min_effect)
+    # grain='day' + scope='both' are the right defaults for "just find anomalies" — day grain
+    # matches how every known incident was actually confirmed, and 'both' is what catches a
+    # localised anomaly a global-only sweep would miss. background job; poll /dev/jobs/{id}.
+    return start_discover_job(req.start, req.end, grain="day", scope="both", min_effect=0.0, method=req.method)
 
 
 class MegaReq(BaseModel):
