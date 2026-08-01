@@ -25,6 +25,7 @@ from config import config, env
 from data import store
 from data.client import get_client, run_query
 from models import Window
+from rca import drilldown
 from rca.detection import detect
 
 _HTML = Path(__file__).resolve().parent / "dev_dashboard.html"
@@ -136,22 +137,42 @@ def benchmark_cases() -> list[dict]:
 
 
 def _case_target(window: str) -> datetime:
-    # "2026-06-23..25" or "2026-06-21" -> the window's first day at noon (a placeholder hour).
+    # "2026-06-23..25" or "2026-06-21" -> the window's first day at noon (detection sample hour).
     return datetime.fromisoformat(window.split("..")[0] + "T12:00")
 
 
+def _case_window(window: str) -> Window:
+    """Parse "2026-06-23..25" / "2026-06-21" into a [start, end) window (end exclusive, whole days)."""
+    parts = window.split("..")
+    start = datetime.fromisoformat(parts[0])
+    if len(parts) == 2:
+        end = datetime.fromisoformat(parts[0][:8] + f"{int(parts[1]):02d}") + timedelta(days=1)
+    else:
+        end = start + timedelta(days=1)
+    return Window(start=start, end=end)
+
+
+def localize(metric: str, start: str, end: str) -> dict:
+    """Run the drill-down over a window and return the localized segment + path + queries."""
+    window = Window(start=datetime.fromisoformat(start), end=datetime.fromisoformat(end))
+    path, localized, queries = drilldown.drill(metric, metric, window, drilldown.baseline_window(window))
+    return {"localized": localized, "path": [n.model_dump() for n in path], "queries": queries}
+
+
 def run_benchmark(method: str | None = None, overrides: dict | None = None) -> list[dict]:
-    """Run every case through the chosen detector (defaults to config.detection.method)."""
+    """Detect (chosen method) AND localise (drill-down) each case; score both vs ground truth."""
     out = []
     for case in benchmark_cases():
-        target = _case_target(case["window"])
         try:
-            res = run_detect(case["metric"], target.isoformat(), method=method, overrides=overrides)
-            a = res["anomaly"]
+            det = run_detect(case["metric"], _case_target(case["window"]).isoformat(), method=method, overrides=overrides)
+            window = _case_window(case["window"])
+            _, localized, _ = drilldown.drill(case["metric"], case["metric"], window, drilldown.baseline_window(window))
+            expected = case["expect_segment"] or {}
             out.append({
-                "id": case["id"], "metric": case["metric"], "method": res["method"],
-                "target": target.isoformat(), "detected": a["detected"], "score": round(a["score"], 2),
-                "expect_segment": case["expect_segment"], "localization": "pending (JAL-77)",
+                "id": case["id"], "metric": case["metric"], "method": det["method"],
+                "detected": det["anomaly"]["detected"], "score": round(det["anomaly"]["score"], 2),
+                "expect_segment": case["expect_segment"], "localized": localized,
+                "hit": localized == expected,
             })
         except Exception as exc:  # noqa: BLE001
             out.append({"id": case["id"], "metric": case["metric"], "error": str(exc)})
@@ -193,6 +214,12 @@ class CompareReq(BaseModel):
 class BenchmarkReq(BaseModel):
     method: str | None = None
     overrides: dict | None = None
+
+
+class LocalizeReq(BaseModel):
+    metric: str = "fill_rate"
+    start: str = "2026-06-23"
+    end: str = "2026-06-26"
 
 
 @router.get("", response_class=HTMLResponse)
@@ -256,3 +283,8 @@ def benchmark_cases_endpoint() -> dict:
 @router.post("/benchmark/run")
 def benchmark_run_endpoint(req: BenchmarkReq) -> dict:
     return {"results": run_benchmark(req.method, req.overrides)}
+
+
+@router.post("/localize")
+def localize_endpoint(req: LocalizeReq) -> dict:
+    return _guard(localize, req.metric, req.start, req.end)
