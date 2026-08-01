@@ -18,6 +18,11 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "ruff>=0.4"]
 
+# Flat layout: explicit package list (api/rca/data/narrator) + loose top-level modules.
+[tool.setuptools]
+packages = ["api", "data", "narrator", "rca"]
+py-modules = ["config", "metrics", "models"]
+
 [tool.ruff]
 line-length = 100
 

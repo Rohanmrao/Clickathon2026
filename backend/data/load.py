@@ -25,7 +25,7 @@ def main() -> None:
     #   1. Execute the CREATE TABLE statements for the raw fact + dim tables (schema.sql, top section).
     #   2. Insert ad_events.parquet  ->  ad_events   (client.insert_df / INSERT FROM INFILE).
     #   3. Insert the three CSVs      ->  dim tables  (see CSV_TABLES).
-    #   4. Build events_enriched and metrics_hourly (schema.sql, bottom section).
+    #   4. Build events_enriched and metrics_hourly_advanced (schema.sql, bottom section).
     #   5. Sanity-check: 9,000,000 rows; date range Jun 1 - Jul 5 2026; 'NAM' present (not 'NA').
     raise NotImplementedError("Lane A: implement load — see prompts/01-data-clickhouse.md")
 

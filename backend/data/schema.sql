@@ -50,9 +50,12 @@ LEFT JOIN apps a USING (app_id)
 LEFT JOIN advertisers adv USING (advertiser_id)
 LEFT JOIN geo_device g USING (geo_device_id);
 
--- Hourly rollup for fast baselines/detection. Ratios stay sum/sum at read time.
-CREATE TABLE IF NOT EXISTS metrics_hourly
-ENGINE = SummingMergeTree
+-- Hourly rollup for fast baselines/detection. Stores raw sums AND pre-computed ratios.
+-- Engine: MergeTree (NOT SummingMergeTree) — the ratio columns must never be summed on merge.
+-- GROUP BY ALL already yields one row per hour x full-dimension key, so nothing merges.
+-- Ratios follow the glossary (see data/metrics.sql); ifNull(.. / nullIf(den,0), 0) => 0, never NULL.
+CREATE TABLE IF NOT EXISTS metrics_hourly_advanced
+ENGINE = MergeTree
 ORDER BY (hour, region, country, os_version, device_model, ad_format, category, publisher_tier, vertical, campaign_type, app_id, advertiser_id)
 AS
 SELECT
@@ -63,6 +66,11 @@ SELECT
     sum(is_filled)     AS fills,
     sum(is_impression) AS impressions,
     sum(is_click)      AS clicks,
-    sum(revenue)       AS revenue
+    sum(revenue)       AS revenue,
+    ifNull(fills       / nullIf(requests, 0), 0)        AS fill_rate,
+    ifNull(impressions / nullIf(fills, 0), 0)           AS render_rate,
+    ifNull(clicks      / nullIf(impressions, 0), 0)     AS ctr,
+    ifNull(revenue     / nullIf(impressions, 0), 0) * 1000 AS ecpm,
+    ifNull(revenue     / nullIf(requests, 0), 0)        AS rpr
 FROM events_enriched
 GROUP BY ALL;

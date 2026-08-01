@@ -44,22 +44,15 @@ class Result:
     queries: list[dict] = field(default_factory=list)
 
 
-# ---- pure helpers (unit-tested without a DB) ----
+def _baseline_start(target_hour: datetime) -> datetime: return target_hour - timedelta(weeks=_DET["baseline_weeks"])
 
-def _baseline_start(target_hour: datetime) -> datetime:
-    return target_hour - timedelta(weeks=_DET["baseline_weeks"])
-
-
-def _fmt(dt: datetime) -> str:
-    # Bind hours as strings + cast with toDateTime() — datetime DateTime params don't match exactly.
-    return dt.strftime("%Y-%m-%d %H:%M:%S")
+def _fmt(dt: datetime) -> str: return dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _detected(z: float, mad_value: float, pct: float) -> bool:
     if mad_value > 0:
         return abs(z) >= _DET["mad_z_threshold"]
-    return abs(pct) >= _DET["min_pct_delta"]  # degenerate-spread fallback
-
+    return abs(pct) >= _DET["min_pct_delta"]
 
 def _where(segment: dict | None) -> tuple[str, dict]:
     if not segment:
