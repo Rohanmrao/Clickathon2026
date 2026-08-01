@@ -1,5 +1,12 @@
 import { useState } from "react";
+import { investigate } from "./api";
+import sampleBundle from "./sample_bundle.json";
+import { DiagnosisCard } from "./components/DiagnosisCard";
+import { FactorSplit } from "./components/FactorSplit";
+import { MetricTree } from "./components/MetricTree";
+import { RuledOutPanel } from "./components/RuledOutPanel";
 import { ChatPanel } from "./components/ChatPanel";
+import type { EvidenceBundle } from "./types";
 
 /* Inline icons (no icon dependency) */
 const I = {
@@ -38,17 +45,24 @@ const NavItem = ({
   </a>
 );
 
-const PlaceholderTile = ({ label }: { label: string }) => (
-  <div className="placeholder">
-    <svg className="ph-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M3 3v18h18" /><path d="m7 14 4-4 3 3 5-6" />
-    </svg>
-    <span className="ph-title">{label}</span>
-  </div>
-);
-
 export default function App() {
   const [nav, setNav] = useState("Dashboard");
+  const [bundle, setBundle] = useState<EvidenceBundle>(sampleBundle as EvidenceBundle); // fixtures-first
+  const [loading, setLoading] = useState(false);
+  const [source, setSource] = useState<"fixture" | "live">("fixture");
+
+  const replay = () => {
+    setLoading(true);
+    investigate(bundle.metric || "revenue")
+      .then((b) => {
+        setBundle(b);
+        setSource(b === (sampleBundle as EvidenceBundle) ? "fixture" : "live");
+      })
+      .finally(() => setLoading(false));
+  };
+
+  const fd = bundle.factor_decomposition;
+
   return (
     <div className="layout">
       <aside className="sidebar">
@@ -76,6 +90,9 @@ export default function App() {
             <span className="topbar-crumb">Workspace / </span>Dashboard
           </div>
           <div className="topbar-actions">
+            <button className="btn-primary" onClick={replay} disabled={loading}>
+              {loading ? "Investigating…" : "Replay incident"}
+            </button>
             <span className="pill"><span className="dot" /> ClickHouse connected</span>
           </div>
         </header>
@@ -83,16 +100,35 @@ export default function App() {
         <div className="main">
           <section className="dash">
             <div className="dash-head">
-              <h1>Dashboard</h1>
-              <p>Metrics and investigations will appear here. Ask the assistant to run one.</p>
+              <h1>Revenue investigation</h1>
+              <p>{source === "live" ? "Live from /investigate" : "Sample incident — fixtures/sample_bundle.json"}</p>
             </div>
-            <div className="grid">
-              <PlaceholderTile label="Revenue overview" />
-              <PlaceholderTile label="Fill rate" />
-              <PlaceholderTile label="eCPM" />
-              <PlaceholderTile label="Recent incidents" />
-              <PlaceholderTile label="Anomaly timeline" />
-              <PlaceholderTile label="Segment breakdown" />
+
+            <div className="story">
+              <div className="story-main">
+                <DiagnosisCard metric={bundle.metric} anomaly={bundle.anomaly} narrative={bundle.narrative} />
+                <FactorSplit factors={fd.factors} primary={fd.primary_factor} />
+                <RuledOutPanel items={bundle.ruled_out} />
+                {bundle.trace_url && (
+                  <a className="trace-btn" href={bundle.trace_url} target="_blank" rel="noreferrer">
+                    View investigation trace →
+                  </a>
+                )}
+              </div>
+              <div className="story-side">
+                <section className="card tree-card">
+                  <h3>Metric tree</h3>
+                  <MetricTree metric={bundle.metric} nodes={bundle.drilldown} />
+                  {bundle.localized_segment && Object.keys(bundle.localized_segment).length > 0 && (
+                    <div className="localized">
+                      <span className="localized-label">Localized to</span>
+                      <span className="localized-val">
+                        {Object.entries(bundle.localized_segment).map(([k, v]) => `${k}=${v}`).join(" · ")}
+                      </span>
+                    </div>
+                  )}
+                </section>
+              </div>
             </div>
           </section>
         </div>
