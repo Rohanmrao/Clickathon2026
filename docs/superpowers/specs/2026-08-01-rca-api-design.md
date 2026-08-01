@@ -25,7 +25,9 @@ GET    /incidents?date=&metric=                scan -> ranked detected incidents
 POST   /investigate {incident_id|metric,window}  -> bundle in ~2s, no narrative
 POST   /narrate/{id}                           -> adds narrative + verification
 GET    /bundle/{id}                            -> retrieve stored bundle
-POST   /chat {query, isSessionActive}          conversational entry + follow-up
+GET    /bundles?limit=                         -> investigation history
+POST   /v1/chat/completions                    conversational entry + follow-up
+                                               (OpenAI-shaped; LibreChat points here)
 GET    /chat/sessions                          list past sessions with history
 DELETE /chat/sessions/{contextId}              reset before a demo run
 ```
@@ -95,18 +97,34 @@ User: "the 23rd"
 
 Intent classification is one cheap LLM call returning a label plus extracted slots. Classification is narration-adjacent, never computation.
 
-### Response contract
+### Response contract — OpenAI-shaped
+
+LibreChat is one of the three blessed integrations, and it talks to *model providers*, not custom
+APIs: a custom endpoint calls `{baseURL}/chat/completions` with `{model, messages[], stream}` and
+reads `choices[0].message.content`.
+
+Rather than build a translation layer, `/chat` returns an OpenAI-shaped response with our fields
+alongside. OpenAI clients ignore unknown keys, so **one endpoint serves both LibreChat and the
+dashboard**, and neither needs to know about the other.
 
 ```json
 {
-  "sessionActive": true,
-  "response": "Revenue fell 4.4% on Jun 23. Fill rate collapsed on Android 15 devices — 78.5% to 43.3%. Region, app category and ad format were checked and ruled out.",
+  "id": "chatcmpl-...",
+  "object": "chat.completion",
+  "created": 1785200000,
+  "model": "rca-analyst",
+  "choices": [{
+    "index": 0,
+    "message": { "role": "assistant",
+                 "content": "Revenue fell 4.4% on Jun 23. Fill rate collapsed on Android 15 devices — 78.5% to 43.3%. Region, app category and ad format were checked and ruled out." },
+    "finish_reason": "stop"
+  }],
+
+  "investigation": { "...EvidenceBundle..." },
   "template": { "metric": "fill_rate", "window": "2026-06-23/2026-06-25",
                 "segment": null, "contextId": "abc123" },
   "isReadyForInvestigation": true,
   "missingFields": [],
-  "investigation": { "...EvidenceBundle..." },
-  "contextId": "abc123",
   "isPlottable": true,
   "plotKind": "metric_tree",
   "plotData": [],
@@ -114,7 +132,22 @@ Intent classification is one cheap LLM call returning a label plus extracted slo
 }
 ```
 
-Field mapping from kangavault: `IsReadyForRetrieval` → `isReadyForInvestigation`, `Retrieval` → `investigation`, `Template` → slots. Session continuity via an `X-Session-Id` header and a returned `contextId`, exactly as `Kv-Chat-Session-Id` works today.
+LibreChat reads `choices[0].message.content`. The dashboard reads `investigation` and `template`.
+
+The request accepts the OpenAI shape too — the last user message becomes the query, and the
+conversation id becomes our `contextId` so a LibreChat thread maps to one chat session and one
+Langfuse session. `model` is accepted and ignored; the narrator model is chosen server-side.
+
+Slot filling still works, and gets simpler: LibreChat resends the full message history every turn,
+so a `missingFields` prompt is just an assistant turn and the reply arrives as the next user
+message. No state machine is needed on the client side.
+
+Field mapping from kangavault: `IsReadyForRetrieval` → `isReadyForInvestigation`, `Retrieval` →
+`investigation`, `Template` → slots. Session continuity via an `X-Session-Id` header or the
+conversation id, exactly as `Kv-Chat-Session-Id` works today.
+
+Streaming (`stream: true`) uses SSE: run the pipeline first, then stream the finished narrative.
+The deterministic analysis is never streamed.
 
 **Deliberately dropped:** multi-tenancy, context-file upload, vector search, graph/Cypher. Single tenant, no documents.
 
