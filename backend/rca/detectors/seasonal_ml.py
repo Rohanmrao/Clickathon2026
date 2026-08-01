@@ -20,10 +20,7 @@ from metrics import metric_sql
 from models import Anomaly, Window
 from rca.robust import mad, med, pct_delta, robust_z
 
-_CFG = config()
-_DET = _CFG["detection"]
-_SEA = _DET["seasonal_ml"]
-_HOURLY = _CFG["clickhouse"]["hourly_table"]
+_HOURLY = config()["clickhouse"]["hourly_table"]
 
 
 def _series_sql(metric: str) -> str:
@@ -63,12 +60,14 @@ def score_series(
 
 def run(metric: str, target: Window) -> tuple[Anomaly, list[dict]]:
     """Score the GLOBAL metric at the target hour via the seasonal model. Returns (Anomaly, queries)."""
+    det = config()["detection"]  # read fresh so in-memory overrides take effect
+    sea = det["seasonal_ml"]
     res = run_query(_series_sql(metric))
     hours = [r[0] for r in res["rows"]]
     values = [r[1] for r in res["rows"]]
     anomaly = score_series(
-        hours, values, target.start, _DET["mad_scale"],
-        _SEA["residual_z_threshold"], _SEA["min_pct_delta"],
+        hours, values, target.start, det["mad_scale"],
+        sea["residual_z_threshold"], sea["min_pct_delta"],
     )
     query = {"id": "q_seasonal_series", "sql": res["resolved_sql"],
              "result_summary": {"n_hours": len(hours), "observed": anomaly.observed, "expected": anomaly.expected}}

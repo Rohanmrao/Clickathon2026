@@ -12,13 +12,14 @@ from collections.abc import Callable
 
 from config import config
 from models import Anomaly, Window
-from rca.detectors import robust_z, seasonal_ml
+from rca.detectors import isolation_forest, robust_z, seasonal_ml
 
 Runner = Callable[[str, Window], "tuple[Anomaly, list[dict]]"]
 
 _DETECTORS: dict[str, Runner] = {
     "robust_z": robust_z.run,
     "seasonal_ml": seasonal_ml.run,
+    "isolation_forest": isolation_forest.run,
 }
 
 

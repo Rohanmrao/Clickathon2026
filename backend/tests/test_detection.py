@@ -38,6 +38,11 @@ def test_select_returns_seasonal_ml_runner():
     assert detection._select("seasonal_ml") is seasonal_ml.run
 
 
+def test_select_returns_isolation_forest_runner():
+    from rca.detectors import isolation_forest
+    assert detection._select("isolation_forest") is isolation_forest.run
+
+
 def test_select_unknown_method_raises():
     with pytest.raises(ValueError):
         detection._select("not_a_method")

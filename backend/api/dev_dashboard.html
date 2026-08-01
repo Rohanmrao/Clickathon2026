@@ -82,7 +82,10 @@
       <label>Hour (ISO)<input id="pg-at" value="2026-07-04T10:00" /></label>
       <label>Method<select id="pg-method">
         <option value="">(config default)</option><option value="robust_z">robust_z</option>
-        <option value="seasonal_ml">seasonal_ml</option></select></label>
+        <option value="seasonal_ml">seasonal_ml</option><option value="isolation_forest">isolation_forest</option></select></label>
+      <label>IF features<select id="pg-iffeat">
+        <option value="">(default)</option><option value="univariate">univariate</option>
+        <option value="multivariate">multivariate</option></select></label>
       <label>mad_z_threshold<input class="sm" id="pg-madz" placeholder="3.5" /></label>
       <label>min_pct_delta<input class="sm" id="pg-pct" placeholder="0.1" /></label>
       <button class="act" onclick="doDetect()">Run</button>
@@ -123,12 +126,23 @@
       Baseline = the <b>same weekday + hour-of-day over the trailing 3 weeks</b> (a "like-for-like"
       comparison). It takes the <b>median</b> of those points as <i>expected</i>, measures spread with
       <b>MAD</b>, and reports a <b>robust z-score</b>. Every number comes straight from a logged SQL query.</div>
-    <div class="card"><b class="mono">seasonal_ml</b> — unsupervised model. <b>No trained ML library, no saved weights.</b><br>
+    <div class="card"><b class="mono">seasonal_ml</b> — unsupervised, hand-rolled. <b>No trained ML library, no saved weights.</b><br>
       It builds a <b>seasonal profile</b>: the median of every <span class="mono">(weekday, hour-of-day)</span>
       bucket across <b>all</b> history — that table of medians <i>is</i> the model, rebuilt each call
       (pandas only). It then scores the target hour's <b>residual</b> (actual − seasonal) against the
       spread of <b>all</b> residuals. Because it pools the whole history, its noise estimate is far more
       stable than <span class="mono">robust_z</span>'s 3-point one — so it fires less on tiny moves.</div>
+    <div class="card"><b class="mono">isolation_forest</b> — an <b>actual trained ML model</b> (scikit-learn IsolationForest), unsupervised.<br>
+      Fits a forest on all historical hours and scores how easily the target hour is "isolated" (outliers
+      isolate faster → higher anomaly score). Two feature modes, toggled by the <b>IF features</b> dropdown:
+      <ul style="margin:6px 0">
+        <li><b>univariate</b> — features are <span class="mono">[value, seasonal, residual, hour, weekday]</span>
+          for the chosen metric; flags when the forest isolates it <i>and</i> the metric moved ≥ its pct floor.</li>
+        <li><b>multivariate</b> — features are the whole ratio vector
+          <span class="mono">[fill_rate, render_rate, ctr, ecpm, rpr, requests]</span>; flags hours whose
+          <i>combination</i> of metrics is unusual, even if the single metric looks normal.</li>
+      </ul>
+      Deterministic (fixed <span class="mono">random_state</span>); the feature-pull SQL is logged for traceability.</div>
 
     <h2>What you can tweak (the knobs)</h2>
     <table><thead><tr><th>Knob</th><th>Applies to</th><th>Meaning</th></tr></thead><tbody>
@@ -138,6 +152,9 @@
       <tr><td class="mono">min_pct_delta</td><td>both</td><td>Ignore moves smaller than this fraction (0.1 = 10%). A floor so trivial % changes never alert.</td></tr>
       <tr><td class="mono">mad_scale</td><td>both</td><td>1.4826 — the constant that makes MAD comparable to a standard deviation. Rarely changed.</td></tr>
       <tr><td class="mono">baseline_weeks</td><td>robust_z</td><td>How many trailing weeks form the baseline. Default 3.</td></tr>
+      <tr><td class="mono">IF features</td><td>isolation_forest</td><td><span class="mono">univariate</span> (single metric) or <span class="mono">multivariate</span> (whole ratio vector). Toggle per run.</td></tr>
+      <tr><td class="mono">contamination</td><td>isolation_forest</td><td>Expected outlier fraction the forest uses to set its flag cutoff. Default <span class="mono">auto</span>.</td></tr>
+      <tr><td class="mono">n_estimators</td><td>isolation_forest</td><td>Number of trees in the forest. Default 200.</td></tr>
     </tbody></table>
 
     <h2>Reading the result</h2>
@@ -234,8 +251,9 @@ async function runDetail(id){
 
 // ---- Benchmarker ----
 function overrides(){
-  const o={}; const mz=$('#pg-madz').value, pc=$('#pg-pct').value;
+  const o={}; const mz=$('#pg-madz').value, pc=$('#pg-pct').value, iff=$('#pg-iffeat').value;
   if(mz) o.mad_z_threshold=parseFloat(mz); if(pc) o.min_pct_delta=parseFloat(pc);
+  if(iff) o.isolation_forest={features:iff};   // nested override; deep-merged server-side
   return Object.keys(o).length?o:null;
 }
 function anomalyCard(res){
