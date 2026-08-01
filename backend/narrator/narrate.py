@@ -5,7 +5,9 @@ the localized segment, the responsible factor, and the ruled-out list. Then run 
 """
 from __future__ import annotations
 
-from config import config
+import boto3
+
+from config import BEDROCK, config
 from models import EvidenceBundle
 from narrator.guardrail import verify
 
@@ -15,10 +17,12 @@ SYSTEM = (
     "the localized segment, the responsible factor, and what was checked and ruled out."
 )
 
+# Only the evidence fields the narrator may draw from — keeps the prompt tight.
+_EVIDENCE = {"metric", "anomaly", "factor_decomposition", "drilldown", "localized_segment", "ruled_out"}
+
 
 def narrate(bundle: EvidenceBundle) -> EvidenceBundle:
-    cfg = config()["narrator"]  # noqa: F841  (max_sentences, temperature)
-    # TODO(Lane C): call the LLM with SYSTEM + bundle JSON; on guardrail failure, re-prompt or strip.
+    # TODO(Lane C): on guardrail failure, re-prompt or strip the offending number.
     prose = _call_llm(bundle)
     bundle.narrative = prose
     bundle.narrative_verification = verify(bundle, prose)
@@ -26,4 +30,15 @@ def narrate(bundle: EvidenceBundle) -> EvidenceBundle:
 
 
 def _call_llm(bundle: EvidenceBundle) -> str:
-    raise NotImplementedError("Lane C: implement _call_llm — see prompts/03-narrator-orchestration.md")
+    cfg = config()["narrator"]
+    client = boto3.client("bedrock-runtime", region_name=BEDROCK["region"])
+    prompt = (
+        f"{SYSTEM}\n\nWrite at most {cfg['max_sentences']} sentences.\n\n"
+        f"Evidence bundle (JSON):\n{bundle.model_dump_json(include=_EVIDENCE)}"
+    )
+    resp = client.converse(
+        modelId=BEDROCK["model_id"],
+        messages=[{"role": "user", "content": [{"text": prompt}]}],
+        inferenceConfig={"maxTokens": 400, "temperature": cfg["temperature"]},
+    )
+    return resp["output"]["message"]["content"][0]["text"].strip()

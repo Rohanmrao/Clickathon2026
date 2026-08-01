@@ -34,4 +34,9 @@ LANGFUSE = {
     "host": env("LANGFUSE_HOST", "https://cloud.langfuse.com"),
 }
 
-LLM = {"api_key": env("LLM_API_KEY"), "model": env("LLM_MODEL")}
+# AWS Bedrock — auth comes from the standard AWS credential chain (aws cli / env / role),
+# so no key is stored here. Region + model default to config.json; env can override.
+BEDROCK = {
+    "region": env("AWS_REGION") or config()["bedrock"]["region"],
+    "model_id": env("BEDROCK_MODEL_ID") or config()["bedrock"]["model_id"],
+}

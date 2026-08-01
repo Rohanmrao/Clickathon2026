@@ -24,5 +24,9 @@
   "narrator": {
     "max_sentences": 5,
     "temperature": 0.1
+  },
+  "bedrock": {
+    "region": "ap-southeast-2",
+    "model_id": "deepseek.v3.2"
   }
 }
