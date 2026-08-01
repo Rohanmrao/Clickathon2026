@@ -23,6 +23,7 @@ from models import Factor, FactorDecomposition, Window
 _RCA = config()["rca"]
 _HOURLY = config()["clickhouse"]["hourly_table"]
 _IDENTITY = _RCA["revenue_identity_factors"]  # ["requests", "fill_rate", "ecpm"]
+_OFFSET_FLOOR = 0.75  # if |net revenue delta| < this * gross factor movement, factors offset -> use share-of-gross
 
 # One place mapping each identity factor to its value from a dict of component sums.
 _FACTOR_VALUE = {
@@ -49,13 +50,21 @@ def decompose_from_sums(obs: dict, exp: dict) -> FactorDecomposition:
     total = r_obs - r_exp
     weight = _logmean(r_obs, r_exp)
 
-    contribution, factors = {}, []
+    contribution = {}
     for f in _IDENTITY:
         fo, fe = ov[f], ev[f]
-        c = weight * (math.log(fo) - math.log(fe)) if fo > 0 and fe > 0 else 0.0
-        contribution[f] = c
-        factors.append(Factor(factor=f, contribution_pct=round(safe_div(c, total), 4), from_=fe, to=fo))
+        contribution[f] = weight * (math.log(fo) - math.log(fe)) if fo > 0 and fe > 0 else 0.0
 
+    # contribution_pct is a factor's share of the revenue delta (c/total). When factors OFFSET, the
+    # net delta collapses toward zero while the gross factor movement doesn't, so c/total explodes
+    # (thousands of percent). In that regime report share-of-GROSS-movement instead — bounded in
+    # [-1,1], signed by each factor's own direction — which is the honest read when revenue is ~flat.
+    gross = sum(abs(c) for c in contribution.values()) or 1.0
+    offsetting = abs(total) < _OFFSET_FLOOR * gross
+    denom = gross if offsetting else total
+
+    factors = [Factor(factor=f, contribution_pct=round(safe_div(contribution[f], denom), 4),
+                      from_=ev[f], to=ov[f]) for f in _IDENTITY]
     primary = max(_IDENTITY, key=lambda f: abs(contribution[f]))
     return FactorDecomposition(factors=factors, primary_factor=primary)
 
