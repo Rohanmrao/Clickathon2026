@@ -96,6 +96,10 @@
     <h2>Ground-truth harness <span class="muted">(detection = chosen method · localization = drill-down)</span>
       <button class="act" onclick="runBench()">Run benchmark</button></h2>
     <div id="bench-result" class="muted">Runs the 4 planted-anomaly cases through the current config.</div>
+
+    <h2>Mega comparison <span class="muted">(all methods × 4 cases × several hours → detailed analysis)</span>
+      <button class="act" onclick="runMega()">Run mega comparison</button></h2>
+    <div id="mega-result" class="muted">Runs every detector variant (robust_z, seasonal_ml, IsolationForest uni/multi) at several hours per case and summarizes detection rate + localization. Runs in the background (~30–60s).</div>
   </section>
 
   <!-- HELP -->
@@ -195,6 +199,7 @@ async function api(path, opts){
 }
 function post(path, obj){ return api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(obj||{})}); }
 const esc = s => String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const seg = s => (s && Object.keys(s).length) ? JSON.stringify(s) : '—';
 
 // tabs
 document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
@@ -265,7 +270,8 @@ function anomalyCard(res){
         <td class="muted">expected</td><td class="num">${a.expected.toFixed(4)}</td></tr>
     <tr><td class="muted">delta</td><td class="num">${a.abs_delta.toFixed(4)} (${(a.pct_delta*100).toFixed(1)}%)</td>
         <td class="muted">score</td><td class="num">${a.score.toFixed(2)} ${esc(a.direction)}</td></tr></table>
-    <div class="muted mono" style="margin-top:8px">queries: ${res.queries.map(q=>esc(q.id)).join(', ')}</div></div>`;
+    <div class="muted" style="margin-top:6px">score scale: ${esc(res.score_kind||'')}</div>
+    <div class="muted mono" style="margin-top:4px">queries: ${res.queries.map(q=>esc(q.id)).join(', ')}</div></div>`;
 }
 async function doDetect(){
   const res = await post('/detect', {metric:$('#pg-metric').value, at:$('#pg-at').value, method:$('#pg-method').value||null, overrides:overrides()});
@@ -275,13 +281,35 @@ async function doCompare(){
   const {results} = await post('/compare', {metric:$('#pg-metric').value, at:$('#pg-at').value});
   $('#pg-result').innerHTML = results.map(anomalyCard).join('');
 }
+async function runMega(){
+  $('#mega-result').innerHTML = '<span class="muted">Running… all methods × 4 cases × several hours. This takes ~30–60s.</span>';
+  const {job_id} = await post('/mega', {hours_per_case:3});
+  const poll = setInterval(async ()=>{
+    const j = await api('/jobs/'+job_id);
+    if(j.finished){ clearInterval(poll); renderMega(j); }
+  }, 2500);
+}
+function renderMega(j){
+  if(j.status!=='done' || !j.result){ $('#mega-result').innerHTML = '<span class="pill no">error</span> '+esc(j.log||''); return; }
+  const res = j.result;
+  const board = `<table><thead><tr><th>Method</th><th>Score scale</th><th class="num">Detection rate</th><th class="num">Cases fired</th><th class="num">Localized ✓</th></tr></thead><tbody>${
+    res.summary.map(s=>`<tr><td class="mono">${esc(s.variant)}</td><td class="muted">${esc(s.score_kind)}</td>
+      <td class="num">${(s.detection_rate*100).toFixed(0)}%</td><td class="num">${s.cases_fired}/${s.cases}</td>
+      <td class="num">${s.localized_correct}/${s.cases}</td></tr>`).join('')}</tbody></table>`;
+  const detail = `<table><thead><tr><th>Method</th><th>Case</th><th>Metric</th><th class="num">Detected</th><th class="num">Mean score</th><th>Localized</th><th>Result</th></tr></thead><tbody>${
+    res.rows.map(r=>`<tr><td class="mono">${esc(r.variant)}</td><td>${esc(r.case)}</td><td>${esc(r.metric)}</td>
+      <td class="num">${r.detected}/${r.hours}</td><td class="num">${r.mean_score??''}</td>
+      <td class="mono">${esc(seg(r.localized))}</td><td>${r.hit?'<span class="pill yes">PASS</span>':'<span class="pill no">FAIL</span>'}</td></tr>`).join('')}</tbody></table>`;
+  $('#mega-result').innerHTML = `<div class="muted" style="margin:8px 0">Detection = fraction of ${res.hours_per_case} sampled hours/case that each method flagged (global level). Localization is deterministic — identical across methods.</div>
+    <b>Leaderboard</b>${board}<div style="margin-top:14px"><b>Per case × method</b>${detail}</div>`;
+}
 async function runBench(){
   $('#bench-result').textContent='Running…';
   const {results} = await post('/benchmark/run',{method:$('#pg-method').value||null, overrides:overrides()});
   const ran = (results.find(r=>r.method)||{}).method || 'config default';
   const passed = results.filter(r=>r.hit).length;
-  const seg = s => (s && Object.keys(s).length) ? JSON.stringify(s) : '—';
-  $('#bench-result').innerHTML = `<div class="muted" style="margin-bottom:8px">Detection method: <b class="mono">${esc(ran)}</b> · localization: drill-down (deterministic) · <b>${passed}/${results.length}</b> localized correctly.</div>
+  const kind = (results.find(r=>r.score_kind)||{}).score_kind || '';
+  $('#bench-result').innerHTML = `<div class="muted" style="margin-bottom:8px">Detection: <b class="mono">${esc(ran)}</b> <span class="muted">(score = ${esc(kind)})</span> · localization: drill-down (deterministic) · <b>${passed}/${results.length}</b> localized correctly.</div>
     <table><thead><tr><th>Case</th><th>Metric</th><th>Detected</th><th class="num">Score</th><th>Expected segment</th><th>Localized</th><th>Result</th></tr></thead><tbody>${
     results.map(r=>`<tr><td>${esc(r.id)}</td><td>${esc(r.metric)}</td>
     <td>${r.error?'<span class="pill no">err</span>':(r.detected?'<span class="pill yes">yes</span>':'<span class="pill no">no</span>')}</td>
