@@ -31,7 +31,7 @@ CLICKHOUSE = {
 LANGFUSE = {
     "public_key": env("LANGFUSE_PUBLIC_KEY"),
     "secret_key": env("LANGFUSE_SECRET_KEY"),
-    "host": env("LANGFUSE_HOST", "https://cloud.langfuse.com"),
+    "host": env("LANGFUSE_HOST", "http://localhost:3000"),
 }
 
 # AWS Bedrock — auth comes from the standard AWS credential chain (aws cli / env / role),
