@@ -25,8 +25,15 @@ def bundle() -> EvidenceBundle:
     return EvidenceBundle.model_validate_json(FIXTURE.read_text())
 
 
-def test_health(client):
-    assert client.get("/health").json() == {"ok": True}
+def test_health_reports_component_wiring(client):
+    """Judges run this locally, where failures are silent: a fresh Langfuse has no keys and
+    tracing no-ops, and the engine may still be stubbed. /health has to say so."""
+    payload = client.get("/health").json()
+
+    assert payload["ok"] is True
+    assert payload["engine"] in {"live", "fixture"}
+    assert "enabled" in payload["langfuse"]
+    assert "host" in payload["langfuse"]
 
 
 def test_get_bundle_returns_stored_bundle(client, bundle, monkeypatch):

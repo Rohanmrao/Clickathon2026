@@ -29,10 +29,25 @@
   },
   "detection": {
     "grain": "hour",
+    "method": "robust_z",
+    "mad_scale": 1.4826,
     "baseline_method": "same_weekday_trailing_weeks",
     "baseline_weeks": 3,
     "mad_z_threshold": 3.5,
-    "min_pct_delta": 0.1
+    "min_pct_delta": 0.1,
+    "seasonal_ml": {
+      "season_keys": ["weekday", "hour"],
+      "residual_z_threshold": 3.5,
+      "min_pct_delta": 0.05
+    },
+    "isolation_forest": {
+      "features": "univariate",
+      "feature_columns": ["fill_rate", "render_rate", "ctr", "ecpm", "rpr", "requests"],
+      "n_estimators": 200,
+      "contamination": "auto",
+      "random_state": 42,
+      "min_pct_delta": 0.05
+    }
   },
   "rca": {
     "revenue_identity_factors": ["requests", "fill_rate", "ecpm"],

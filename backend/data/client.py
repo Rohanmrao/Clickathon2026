@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import time
+from functools import lru_cache
 from typing import Any
 
 import clickhouse_connect
@@ -10,7 +11,14 @@ from config import CLICKHOUSE
 from obs import langfuse
 
 
+@lru_cache(maxsize=1)
 def get_client():
+    """One memoized, pooled client reused across all queries.
+
+    clickhouse-connect clients hold an internal (thread-safe) connection pool, so reusing a single
+    client avoids a fresh TLS handshake per query — the dominant cost when firing many small queries
+    (e.g. the benchmarker). Call get_client.cache_clear() to force a reconnect.
+    """
     return clickhouse_connect.get_client(
         host=CLICKHOUSE["host"],
         port=CLICKHOUSE["port"],
