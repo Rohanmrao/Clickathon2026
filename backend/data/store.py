@@ -88,11 +88,25 @@ def load_bundle(investigation_id: str) -> EvidenceBundle | None:
 
 def load_trace_id(investigation_id: str) -> str | None:
     """The Langfuse trace opened by /investigate, so /narrate can attach to it."""
+    return load_meta(investigation_id)[0]
+
+
+def load_meta(investigation_id: str) -> tuple[str | None, str | None]:
+    """(trace_id, session_id) for an existing investigation.
+
+    Both must be re-supplied on any later write. `investigations` is a ReplacingMergeTree keyed
+    on investigation_id, so a save that omits them does not merge — it replaces the row with
+    empty strings and silently breaks two links: /narrate's trace reattachment, and the
+    session -> investigation association that GET /chat/sessions/{id} depends on.
+    """
     rows = get_client().query(
-        f"SELECT trace_id FROM {INVESTIGATIONS} FINAL WHERE investigation_id = {{id:String}}",
+        f"SELECT trace_id, session_id FROM {INVESTIGATIONS} FINAL "
+        f"WHERE investigation_id = {{id:String}}",
         parameters={"id": investigation_id},
     ).result_rows
-    return (rows[0][0] or None) if rows else None
+    if not rows:
+        return None, None
+    return (rows[0][0] or None), (rows[0][1] or None)
 
 
 def list_investigations(limit: int = 50) -> list[dict[str, Any]]:
