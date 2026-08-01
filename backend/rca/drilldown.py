@@ -16,6 +16,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from config import config
+from data.calibration import measure_natural_noise
 from data.client import run_query
 from metrics import safe_div
 from models import DrilldownNode, Window
@@ -139,6 +140,32 @@ def drill(metric: str, factor: str, target: Window, baseline: Window) -> tuple[l
         pop_obs, pop_exp, pop_sql = _pop(where_sql, params)
         queries.append({"id": f"q_drill_pop_{depth}", "sql": pop_sql,
                         "result_summary": {"filter": dict(filt), "observed": _metric_from_sums(factor, pop_obs)}})
+
+        # Materiality gate: contribution is gap_closed / |total_gap|, so when the population
+        # barely moved, |total_gap| ~ 0 and ANY segment's noise "explains" ~100% of it. Without
+        # this the drill returns a confident 4-level culprit for a non-event: measured on ecpm
+        # Jun 16-18 (a +0.4% move) it produced vertical=auto -> publisher_tier=tier_2 ->
+        # region=NAM -> device_model=Redmi Note 12, all on a gap that does not exist.
+        #
+        # Gate on the gap relative to the metric's OWN natural noise, NOT on an absolute percent
+        # floor. A localised anomaly is often small globally while being severe in its segment —
+        # that is the entire reason to drill. Measured global gaps: fill_rate Jun 28-30 is only
+        # -1.2% (yet APAC/iOS 18.1 inside it is -51%), ecpm Jun 19-22 is -4.2% (finance is -35%).
+        # An absolute floor big enough to reject the +0.4% non-event would also reject both of
+        # those. Against natural noise they separate cleanly: 3.4x and 7.0x versus 0.7x.
+        if depth == 0:
+            observed = _metric_from_sums(factor, pop_obs)
+            expected = _metric_from_sums(factor, pop_exp)
+            gap_pct = safe_div(observed - expected, abs(expected))
+            noise = measure_natural_noise(factor)
+            floor = (noise or 0.0) * _RCA.get("min_gap_noise_multiple", 2.0)
+            if floor and abs(gap_pct) < floor:
+                queries[-1]["result_summary"]["skipped"] = (
+                    f"population moved {gap_pct:+.2%}, under {floor:.2%} "
+                    f"({_RCA.get('min_gap_noise_multiple', 2.0)}x {factor}'s natural noise of "
+                    f"{noise:.2%}) — no material gap to localise"
+                )
+                break
 
         best = None  # (contribution, lift, dim, val, seg_obs, seg_exp, sql)
         for dim in (d for d in _RCA["drilldown_dimensions"] if d not in filt):

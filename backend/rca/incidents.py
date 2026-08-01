@@ -1,30 +1,10 @@
-"""JAL-78: find incidents without being told where to look.
-
-The unseen-incident deliverable gives us a fresh data slice and nobody knows which window is
-anomalous, so the system has to sweep the data itself. Two things this module exists to get
-right, both of which a naive scanner gets wrong:
-
-1. SCAN EVERY FACTOR, NOT REVENUE. Revenue is the headline metric but it hides things. In the
-   provided data, Jun 29-30 are the two highest-revenue days in the whole 35-day set while APAC
-   fill rate collapsed by half - traffic growth masked it completely. Detection therefore runs
-   independently on requests, fill_rate, render_rate, ecpm, ctr and revenue.
-
-2. MERGE CONTIGUOUS WINDOWS. Planted anomalies span days. At hourly grain a single 3-day
-   anomaly fires ~72 separate alerts, and investigating each one produces 72 near-identical
-   bundles. Adjacent flagged buckets collapse into one incident before anything is investigated.
-
-Cost is one query per metric for an entire scan: a single pass pulls the target range plus the
-trailing history, and the like-for-like comparison happens in Python over that small series.
-
-The detection rule is deliberately imported from `rca.baseline` rather than reimplemented, so
-there is exactly one definition of "is this an anomaly" in the codebase.
-"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
 from config import config
+from data.calibration import effect_threshold
 from data.client import run_query
 from metrics import metric_sql
 from rca.baseline import _detected
@@ -148,13 +128,19 @@ def score_buckets(
     requests: dict[datetime, int],
     targets: list[datetime],
     weeks: int,
+    calibrated_effect: float,
     min_effect: float = MIN_EFFECT,
 ) -> list[Bucket]:
     """Score each target bucket against its own like-for-like baseline.
 
-    `min_effect` is a scan-level significance floor on top of the shared detection rule. It
-    answers a different question from `baseline._detected` ("is this bucket statistically
-    unusual?") - namely "is this incident worth putting in front of a human?".
+    `calibrated_effect` is `_detected`'s per-metric, auto-calibrated effect-size floor (see
+    data.calibration.effect_threshold) — computed by the CALLER (scan_incidents, which already
+    talks to ClickHouse per metric) and passed in as a plain number, deliberately, so this
+    function stays DB-free and unit-testable (see tests/test_incidents.py).
+
+    `min_effect` is a SEPARATE, additional scan-level significance floor on top of that. It
+    answers a different question from `_detected` ("is this bucket statistically unusual, by
+    a real amount?") - namely "is this incident worth putting in front of a human?".
 
     It is load-bearing here for a reason specific to merging. With baseline_weeks=3 the MAD is
     computed over three points and collapses toward zero, so a 0.0% move can still score z=8.6.
@@ -178,7 +164,8 @@ def score_buckets(
             Bucket(
                 bucket=bucket, observed=observed, expected=centre, robust_z=z, pct_delta=pct,
                 requests=requests.get(bucket, 0),
-                detected=_detected(z, spread, pct) and abs(pct) >= min_effect,
+                detected=_detected(z, spread, pct, calibrated_effect) and abs(pct) >= min_effect,
+                # ^ calibrated_effect is a plain number (see docstring); no metric/DB lookup here.
             )
         )
     return scored
@@ -255,7 +242,8 @@ def scan_incidents(
         values = {r[0]: float(r[1]) for r in out["rows"] if r[1] is not None}
         requests = {r[0]: int(r[2]) for r in out["rows"]}
         targets = [b for b in values if start <= b < end]
-        scored = score_buckets(values, requests, targets, weeks, min_effect)
+        calibrated_effect = effect_threshold(metric)  # DB-touching; belongs in this loop, not score_buckets
+        scored = score_buckets(values, requests, targets, weeks, calibrated_effect, min_effect)
         found = build_incidents(metric, scored, step)
         incidents.extend(found)
         queries.append({
@@ -264,6 +252,113 @@ def scan_incidents(
             "result_summary": {"buckets": len(targets), "incidents": len(found)},
             "langfuse_span_id": out.get("langfuse_span_id"),
         })
+
+    incidents.sort(key=lambda i: i.score, reverse=True)
+    return ScanResult(incidents=incidents, queries=queries)
+
+
+# ---- per-segment scan: catches anomalies scan_incidents structurally cannot see -----------
+#
+# scan_incidents() only ever checks the GLOBAL aggregate per metric. That misses anything
+# localized to one segment whose effect gets diluted below the detection floor once averaged
+# across every other (unaffected, or growing) segment. Confirmed on real data: APAC fill_rate
+# collapsed ~6-7% (z in the hundreds) on Jun 28-30, while the GLOBAL fill_rate move that same
+# window was only 0.8-2.3% - comfortably under the calibrated floor - because total traffic
+# was simultaneously growing (organic volume growth masked a real regional problem). Global-only
+# scanning would never surface this; it was only found because a code comment happened to
+# mention it. This function exists so "how many anomalies are in this dataset" doesn't depend
+# on stumbling across a hint.
+
+# Low-cardinality dimensions only for a broad sweep. app_id (2000 values) and advertiser_id
+# (501) are excluded here deliberately: at ~2 requests/hour/app, ratio metrics degenerate
+# (fill_rate can only be 0, 0.5, or 1 - see project-clickathon-detection-methodology memory),
+# so a broad per-app sweep would mostly surface sampling-noise artifacts, not real incidents.
+SEGMENT_SCAN_DIMENSIONS = [
+    "region", "country", "os_version", "device_model", "ad_format",
+    "category", "publisher_tier", "vertical", "campaign_type",
+]
+
+# Below this many requests over the WHOLE scan window, a segment's ratio metrics are too
+# sparse to trust (same degenerate-ratio problem as app_id, just for any segment that happens
+# to be small). Filters noise without hardcoding which segments to skip.
+MIN_SEGMENT_VOLUME = 5_000
+
+
+def _series_sql_by_segment(metric: str, grain: str, dimension: str) -> str:
+    """One pass covering every value of `dimension` at once - vectorized (one query
+    regardless of cardinality), not one query per segment value. See the ~5000x benchmark
+    in project-clickathon-detection-methodology memory for why this matters."""
+    return (
+        f"SELECT {dimension} AS seg, {_GRAIN_SQL[grain]} AS bucket, "
+        f"{metric_sql(metric, 'rollup')} AS value, sum(requests) AS bucket_requests "
+        f"FROM {_HOURLY} "
+        f"WHERE hour >= toDateTime({{hist_start:String}}) AND hour < toDateTime({{end:String}}) "
+        f"GROUP BY seg, bucket ORDER BY seg, bucket"
+    )
+
+
+def scan_segments(
+    start: datetime,
+    end: datetime,
+    metrics: list[str] | None = None,
+    dimensions: list[str] | None = None,
+    grain: str | None = None,
+    min_effect: float = MIN_EFFECT,
+    min_segment_volume: int = MIN_SEGMENT_VOLUME,
+) -> ScanResult:
+    """Sweep [start, end) across every metric AND every value of every dimension.
+
+    One query per (metric, dimension) pair fetches every segment value's series at once
+    (vectorized SQL), then the same pure score_buckets()/build_incidents() logic used by
+    scan_incidents() runs once per segment in Python - no DB access in that inner loop, so
+    looping there is cheap even at high cardinality.
+
+    Incident IDs are namespaced as "metric[dimension=value]" so they're distinguishable from
+    scan_incidents()'s plain "metric" IDs in a combined result set.
+    """
+    grain = grain or "day"
+    if grain not in _GRAIN_SQL:
+        raise ValueError(f"grain must be one of {sorted(_GRAIN_SQL)}, got {grain!r}")
+    metrics = metrics or DEFAULT_METRICS
+    dimensions = dimensions or SEGMENT_SCAN_DIMENSIONS
+    weeks = _DET["baseline_weeks"]
+    step = _GRAIN_STEP[grain]
+    hist_start = start - timedelta(weeks=weeks)
+
+    incidents: list[Incident] = []
+    queries: list[dict] = []
+    for metric in metrics:
+        calibrated_effect = effect_threshold(metric)
+        for dimension in dimensions:
+            out = run_query(
+                _series_sql_by_segment(metric, grain, dimension),
+                {"hist_start": _fmt(hist_start), "end": _fmt(end)},
+                name=f"scan_seg:{metric}:{dimension}",
+            )
+            by_seg_values: dict[str, dict[datetime, float]] = {}
+            by_seg_requests: dict[str, dict[datetime, int]] = {}
+            for seg, bucket, value, bucket_requests in out["rows"]:
+                if not seg or value is None:  # skip empty-string segments (e.g. unfilled rows)
+                    continue
+                by_seg_values.setdefault(seg, {})[bucket] = float(value)
+                by_seg_requests.setdefault(seg, {})[bucket] = int(bucket_requests)
+
+            found_this_pass = 0
+            for seg, values in by_seg_values.items():
+                if sum(by_seg_requests[seg].values()) < min_segment_volume:
+                    continue
+                targets = [b for b in values if start <= b < end]
+                scored = score_buckets(values, by_seg_requests[seg], targets, weeks, calibrated_effect, min_effect)
+                found = build_incidents(f"{metric}[{dimension}={seg}]", scored, step)
+                incidents.extend(found)
+                found_this_pass += len(found)
+
+            queries.append({
+                "id": f"q_scan_seg_{metric}_{dimension}",
+                "sql": out["resolved_sql"],
+                "result_summary": {"segments": len(by_seg_values), "incidents": found_this_pass},
+                "langfuse_span_id": out.get("langfuse_span_id"),
+            })
 
     incidents.sort(key=lambda i: i.score, reverse=True)
     return ScanResult(incidents=incidents, queries=queries)
