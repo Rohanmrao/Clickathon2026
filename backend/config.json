@@ -55,8 +55,10 @@
       "region", "country", "os_version", "device_model", "ad_format",
       "category", "publisher_tier", "vertical", "campaign_type", "app_id", "advertiser_id"
     ],
-    "stop_contribution_threshold": 0.15,
-    "max_depth": 4
+    "stop_contribution_threshold": 0.5,
+    "min_lift": 1.5,
+    "max_depth": 4,
+    "baseline_weeks": 2
   },
   "ruled_out_hypotheses": ["request_volume", "ctr_quality", "ecpm_price", "device_mix", "seasonality"],
   "narrator": {
