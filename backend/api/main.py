@@ -1,4 +1,11 @@
-"""Lane C: FastAPI orchestration. Runs today against the fixture; swap to the live pipeline later.
+"""Lane C: FastAPI orchestration.
+
+Endpoint surface (docs/superpowers/specs/2026-08-01-rca-api-design.md):
+
+    GET  /health                liveness
+    GET  /bundle/{id}           retrieve a stored Evidence Bundle
+    GET  /bundles               investigation history
+    POST /investigate           run the pipeline (still fixture-backed)
 
   uvicorn api.main:app --reload --port 8000
 """
@@ -7,10 +14,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from data import store
 from models import EvidenceBundle, Window
 
 FIXTURE = Path(__file__).resolve().parents[2] / "fixtures" / "sample_bundle.json"
@@ -34,5 +42,30 @@ def health() -> dict:
 @app.post("/investigate", response_model=EvidenceBundle)
 def investigate(req: InvestigateRequest) -> EvidenceBundle:
     # Ships against the fixture so the frontend and demo work from day one.
-    # TODO(Lane C): replace with build_bundle(req.metric, req.window) -> narrate(...) -> attach trace_url.
+    # TODO(JAL-79): replace with build_bundle(req.metric, req.window), persist via
+    #   store.save_bundle(bundle, trace_id=...), and return without a narrative.
     return EvidenceBundle.model_validate(json.loads(FIXTURE.read_text()))
+
+
+@app.get("/bundle/{investigation_id}", response_model=EvidenceBundle)
+def get_bundle(investigation_id: str) -> EvidenceBundle:
+    """Retrieve a stored Evidence Bundle.
+
+    This is how a judge re-reads an investigation after the fact, and it is the
+    submission artifact path for the unseen incident.
+    """
+    bundle = store.load_bundle(investigation_id)
+    if bundle is None:
+        raise HTTPException(status_code=404, detail=f"No investigation {investigation_id!r}")
+    return bundle
+
+
+@app.get("/bundles")
+def list_bundles(limit: int = 50) -> dict:
+    """Investigation history — the flattened columns, not the full bundles.
+
+    Lets the dashboard show past runs and lets a judge see what the system has
+    investigated without pulling every bundle body.
+    """
+    rows = store.list_investigations(limit)
+    return {"count": len(rows), "investigations": rows}
