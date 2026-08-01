@@ -100,6 +100,29 @@ def test_benchmark_cases_returns_the_four_ground_truth_cases():
     assert {c["id"] for c in cases} == {"A", "B", "C", "D"}
 
 
+def test_case_window_parses_range_and_single_day():
+    r = dev._case_window("2026-06-23..25")
+    assert (r.start.isoformat(), r.end.isoformat()) == ("2026-06-23T00:00:00", "2026-06-26T00:00:00")
+    s = dev._case_window("2026-06-21")
+    assert (s.start.isoformat(), s.end.isoformat()) == ("2026-06-21T00:00:00", "2026-06-22T00:00:00")
+
+
+def test_run_benchmark_includes_localization_and_hit():
+    def fake_run_detect(metric, at, method=None, overrides=None):
+        return {"method": method or "robust_z", "anomaly": {"detected": True, "score": 1.0}, "queries": []}
+
+    def fake_drill(metric, factor, target, baseline):
+        return [], {"os_version": "Android 15"}, []  # matches case A's ground truth only
+
+    with patch.object(dev, "run_detect", fake_run_detect), patch.object(dev.drilldown, "drill", fake_drill):
+        rows = dev.run_benchmark()
+    assert all("localized" in r and "hit" in r for r in rows)
+    row_a = next(r for r in rows if r["id"] == "A")
+    assert row_a["localized"] == {"os_version": "Android 15"}
+    assert row_a["hit"] is True
+    assert next(r for r in rows if r["id"] == "B")["hit"] is False
+
+
 def test_run_benchmark_forwards_method_and_overrides():
     seen = []
 

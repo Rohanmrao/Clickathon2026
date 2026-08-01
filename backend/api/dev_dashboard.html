@@ -279,12 +279,16 @@ async function runBench(){
   $('#bench-result').textContent='Running…';
   const {results} = await post('/benchmark/run',{method:$('#pg-method').value||null, overrides:overrides()});
   const ran = (results.find(r=>r.method)||{}).method || 'config default';
-  $('#bench-result').innerHTML = `<div class="muted" style="margin-bottom:8px">Ran with method: <b class="mono">${esc(ran)}</b> — set it via the Method dropdown above.</div><table><thead><tr><th>Case</th><th>Metric</th><th>Target hour</th>
-    <th>Detected</th><th class="num">Score</th><th>Expected segment</th><th>Localization</th></tr></thead><tbody>${
-    results.map(r=>`<tr><td>${esc(r.id)}</td><td>${esc(r.metric)}</td><td class="muted mono">${esc(r.target||'')}</td>
-    <td>${r.error?('<span class="pill no">err</span>'):(r.detected?'<span class="pill yes">yes</span>':'<span class="pill no">no</span>')}</td>
-    <td class="num">${r.score??''}</td><td class="mono">${esc(r.expect_segment?JSON.stringify(r.expect_segment):'—')}</td>
-    <td class="muted">${esc(r.error||r.localization||'')}</td></tr>`).join('')}</tbody></table>`;
+  const passed = results.filter(r=>r.hit).length;
+  const seg = s => (s && Object.keys(s).length) ? JSON.stringify(s) : '—';
+  $('#bench-result').innerHTML = `<div class="muted" style="margin-bottom:8px">Detection method: <b class="mono">${esc(ran)}</b> · localization: drill-down (deterministic) · <b>${passed}/${results.length}</b> localized correctly.</div>
+    <table><thead><tr><th>Case</th><th>Metric</th><th>Detected</th><th class="num">Score</th><th>Expected segment</th><th>Localized</th><th>Result</th></tr></thead><tbody>${
+    results.map(r=>`<tr><td>${esc(r.id)}</td><td>${esc(r.metric)}</td>
+    <td>${r.error?'<span class="pill no">err</span>':(r.detected?'<span class="pill yes">yes</span>':'<span class="pill no">no</span>')}</td>
+    <td class="num">${r.score??''}</td>
+    <td class="mono muted">${esc(seg(r.expect_segment))}</td>
+    <td class="mono">${esc(r.error?r.error:seg(r.localized))}</td>
+    <td>${r.error?'':(r.hit?'<span class="pill yes">PASS</span>':'<span class="pill no">FAIL</span>')}</td></tr>`).join('')}</tbody></table>`;
 }
 
 loadTables();
