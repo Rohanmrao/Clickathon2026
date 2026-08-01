@@ -9,7 +9,20 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass
 
+from config import LANGFUSE
 from obs import langfuse
+
+
+def _browser_url(url: str | None) -> str | None:
+    """Rewrite the SDK's internal ingestion host to the browser-facing one.
+
+    get_trace_url() bakes in LANGFUSE["host"], which in Docker is langfuse-web:3000 — a name the
+    host browser can't resolve, so "Open trace" would dead-link. Swap it for public_host
+    (localhost:3000). No-op on a host venv run, where the two are equal.
+    """
+    if url and LANGFUSE["host"] != LANGFUSE["public_host"]:
+        return url.replace(LANGFUSE["host"], LANGFUSE["public_host"], 1)
+    return url
 
 
 @dataclass(frozen=True)
@@ -62,7 +75,7 @@ def investigation_trace(
             )
             trace_id = lf.get_current_trace_id()
             try:
-                yield Trace(trace_id=trace_id, url=lf.get_trace_url(trace_id=trace_id))
+                yield Trace(trace_id=trace_id, url=_browser_url(lf.get_trace_url(trace_id=trace_id)))
             finally:
                 lf.flush()
 
