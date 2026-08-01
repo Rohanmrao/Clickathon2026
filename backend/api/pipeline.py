@@ -224,7 +224,10 @@ def narrate_investigation(investigation_id: str) -> EvidenceBundle | None:
     if bundle is None:
         return None
 
-    trace_id = store.load_trace_id(investigation_id)
+    # Both are re-supplied on the save below. investigations is a ReplacingMergeTree keyed on
+    # investigation_id, so omitting session_id here does not leave it alone — it replaces the
+    # row with an empty one and silently unlinks the investigation from its conversation.
+    trace_id, session_id = store.load_meta(investigation_id)
 
     with narration_span(trace_id, bundle.metric) as span:
         try:
@@ -255,5 +258,5 @@ def narrate_investigation(investigation_id: str) -> EvidenceBundle | None:
                     investigation_id, bundle.narrative_verification.unverified_numbers,
                 )
 
-    store.save_bundle(bundle, trace_id=trace_id)
+    store.save_bundle(bundle, trace_id=trace_id, session_id=session_id)
     return bundle
