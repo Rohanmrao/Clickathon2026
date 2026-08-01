@@ -29,7 +29,7 @@ export function Sparkline() {
       {[40, 90, 140, 190].map((gy) => (
         <line key={gy} x1="0" y1={gy} x2="900" y2={gy} stroke="var(--border-neutral-default)" />
       ))}
-      <path d={exp} fill="none" stroke="var(--content-neutral-bright)" strokeWidth="1.6" strokeDasharray="5 5" />
+      <path d={exp} fill="none" stroke="var(--content-neutral-main)" strokeWidth="1.6" strokeDasharray="5 5" />
       <path d={areaPath} fill="url(#fillDrop)" stroke="none" />
       <path d={act} fill="none" stroke="var(--content-secondary-main)" strokeWidth="2.4" strokeLinejoin="round" strokeLinecap="round" />
       <line x1={x(drop)} y1="8" x2={x(drop)} y2="212" stroke="var(--content-negative-dark)" strokeWidth="1" strokeDasharray="3 4" opacity="0.7" />

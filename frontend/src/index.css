@@ -10,6 +10,9 @@
   --font-family-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", monospace;
   /* Hairline lives as a token so component rules never write a raw px. */
   --hairline: 1px;
+  /* Text/overlays on the gold accent must stay dark in BOTH themes (semantic
+     tokens flip with theme; this primitive is fixed near-black). */
+  --on-accent: var(--Standard-gray-1-1000);
 
   /* variables-final.css is a *fluid* scale: it redefines --base-* and the
      font-size tokens per viewport bucket, so large sizes compress non-linearly
@@ -49,11 +52,14 @@
 html, body, #root { height: 100%; }
 body {
   margin: 0;
-  background: var(--Dark-gray-2-975);
-  color: var(--Dark-gray-2-100);
+  /* theme class (light-theme/dark-theme) is set on <body> at runtime, so these
+     semantic tokens resolve and the page background follows the active theme. */
+  background: var(--bg-canvas);
+  color: var(--content-display-text-body-main);
   font-family: var(--font-family-common);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+  transition: background 0.2s ease, color 0.2s ease;
 }
 
 /* ---------- app shell (single-screen: no page scroll) ---------- */
@@ -101,7 +107,7 @@ body {
   justify-content: space-between;
   gap: var(--all-gap-l);
   padding: var(--base-12) var(--all-padding-xl);
-  border-bottom: var(--hairline) solid var(--border-neutral-default);
+  border-bottom: var(--hairline) solid var(--border-neutral-activated);
   background: color-mix(in srgb, var(--bg-canvas) 86%, transparent);
   backdrop-filter: blur(var(--base-12));
 }
@@ -115,7 +121,7 @@ body {
   align-items: center;
   justify-content: center;
   background: linear-gradient(140deg, var(--content-secondary-dark), var(--content-secondary-bright));
-  color: var(--bg-canvas);
+  color: var(--on-accent);
   font-family: var(--font-family-mono);
   font-weight: 700;
   font-size: var(--font-size-body-2);
@@ -162,7 +168,7 @@ body {
   align-items: center;
   gap: var(--group-gap-l);
   padding: var(--group-padding-l) var(--all-padding-xs);
-  border: var(--hairline) solid var(--border-neutral-default);
+  border: var(--hairline) solid var(--border-neutral-activated);
   border-radius: var(--all-radius-xs);
   background: transparent;
   color: var(--content-display-text-body-main);
@@ -174,6 +180,8 @@ body {
   transition: background 0.15s ease, color 0.15s ease;
 }
 .ghost-btn:hover { background: var(--bg-dimmed); color: var(--content-display-text-title-main); }
+.ghost-btn.icon-btn { padding: var(--group-padding-l); }
+.ghost-btn.icon-btn svg { width: var(--icon-m); height: var(--icon-m); display: block; }
 
 .primary-btn {
   display: inline-flex;
@@ -183,7 +191,7 @@ body {
   border: none;
   border-radius: var(--all-radius-xs);
   background: var(--content-secondary-main);
-  color: var(--bg-canvas);
+  color: var(--on-accent);
   font-family: var(--font-family-common);
   font-size: var(--font-size-caption-1);
   font-weight: 600;
@@ -215,6 +223,7 @@ body {
   min-height: 0;
 }
 .col-right {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: var(--base-8);
@@ -236,21 +245,91 @@ body {
 }
 .card + .card { margin-top: 0; }
 
-/* Diagnosis + Factor split share a row; the hovered card extends, the other yields */
+/* Diagnosis + Factor split share a fixed-height row and slide via the arrow
+   handle: the active card spans wide & clear, the other shrinks and blurs.
+   Row height never changes — only the column span animates. */
 .split-row {
   flex: none;
+  position: relative;
   display: flex;
   gap: var(--base-8);
   align-items: stretch;
+  height: var(--base-220);
 }
 .split-row > .card {
   flex: 1 1 0;
   min-width: 0;
+  height: 100%;
   overflow: hidden;
-  transition: flex-grow 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+  cursor: pointer;
+  transition: flex-grow 0.5s cubic-bezier(0.16, 1, 0.3, 1),
+              filter 0.5s ease, opacity 0.5s ease;
 }
-.split-row:hover > .card { flex-grow: 0.62; }
-.split-row > .card:hover { flex-grow: 2.2; }
+/* the active (expanded) card */
+.split-row.active-diagnosis > .card:first-of-type,
+.split-row.active-factor > .card:last-of-type {
+  flex-grow: 2.6;
+  cursor: default;
+}
+/* the shrunk, blurred card */
+.split-row.active-diagnosis > .card:last-of-type,
+.split-row.active-factor > .card:first-of-type {
+  flex-grow: 0.55;
+  filter: blur(var(--base-4)) saturate(0.7);
+  opacity: 0.5;
+}
+
+/* ◀ mid ▶ control (stacked): left expands Diagnosis, right expands Factor split,
+   mid resets. The cluster rides to the divider seam but stays vertically centered. */
+.split-nav {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--group-gap-s);
+  padding: var(--group-padding-s);
+  border-radius: var(--round);
+  border: var(--hairline) solid var(--border-neutral-default);
+  background: var(--bg-elevated);
+  box-shadow: 0 var(--shadow-y-s) var(--shadow-blur-s) var(--shadow-base),
+              0 var(--shadow-y-m) var(--shadow-blur-m) var(--shadow-spread);
+  transition: left 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.split-row.active-both .split-nav { left: 50%; }
+.split-row.active-diagnosis .split-nav { left: 82%; }
+.split-row.active-factor .split-nav { left: 18%; }
+
+/* center the factor bars vertically in the fixed-height card */
+.split-row > .card:last-of-type { display: flex; flex-direction: column; }
+.split-row > .card:last-of-type .factors { flex: 1; justify-content: center; }
+.split-arrow,
+.split-mid {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--icon-xl);
+  height: var(--icon-xl);
+  border: none;
+  border-radius: var(--round);
+  background: transparent;
+  color: var(--content-display-text-body-dimmed);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.split-arrow:hover,
+.split-mid:hover { background: var(--bg-dimmed); color: var(--content-display-text-title-main); }
+.split-arrow.is-active,
+.split-mid.is-active { background: var(--content-secondary-main); color: var(--on-accent); }
+.split-arrow svg,
+.split-mid svg { width: var(--icon-s); height: var(--icon-s); }
+
+@media (prefers-reduced-motion: reduce) {
+  .split-row > .card { transition: none; }
+}
 
 /* ---------- anomaly card ---------- */
 .anomaly-head {
@@ -327,7 +406,7 @@ body {
 .spark-legend .keys { display: flex; gap: var(--all-gap-s); }
 .spark-legend .key { display: flex; align-items: center; gap: var(--group-gap-l); }
 .swatch-line { width: var(--base-14); height: var(--base-2); display: inline-block; background: var(--content-secondary-main); }
-.swatch-dash { width: var(--base-14); height: 0; border-top: var(--base-2) dashed var(--content-neutral-bright); display: inline-block; }
+.swatch-dash { width: var(--base-14); height: 0; border-top: var(--base-2) dashed var(--content-neutral-main); display: inline-block; }
 
 /* ---------- diagnosis ---------- */
 .narrative {
@@ -369,7 +448,7 @@ body {
   background: var(--bg-dimmed);
   overflow: hidden;
 }
-.bar-fill { height: 100%; border-radius: var(--round); background: var(--content-neutral-bright); }
+.bar-fill { display: block; height: 100%; border-radius: var(--round); background: var(--content-neutral-bright); }
 .factor-row.is-primary .bar-fill { background: var(--content-negative-dark); }
 
 /* ---------- ruled out ---------- */
@@ -517,34 +596,39 @@ body {
   justify-content: center;
 }
 
-/* ---------- follow-up launcher (opens LibreChat) ---------- */
-.followup { flex: none; }
-.chat-icon-btn {
-  flex: none;
+/* ---------- follow-up button (opens LibreChat) ---------- */
+.followup-wrap { flex: none; }
+.followup-btn {
+  width: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: var(--icon-2xl);
-  height: var(--icon-2xl);
-  padding: var(--group-padding-l);
+  gap: var(--all-gap-xs);
+  padding: var(--all-padding-s);
   border: var(--hairline) solid var(--border-secondary-default);
-  border-radius: var(--all-radius-xs);
+  border-radius: var(--all-radius-l);
   background: var(--bg-secondary-bright-default);
   color: var(--content-secondary-main);
+  font-family: var(--font-family-common);
+  font-size: var(--font-size-body-1);
+  font-weight: 600;
+  letter-spacing: 0.06em;
   cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
-.chat-icon-btn:hover { background: var(--content-secondary-main); color: var(--bg-canvas); }
-.chat-icon-btn svg { width: var(--icon-m); height: var(--icon-m); }
+.followup-btn:hover,
+.followup-btn.is-open { background: var(--content-secondary-main); color: var(--on-accent); border-color: var(--content-secondary-main); }
+.followup-btn .fb-icon { display: flex; }
+.followup-btn .fb-icon svg { width: var(--icon-m); height: var(--icon-m); }
 
-/* ---------- LibreChat popover ---------- */
+/* ---------- LibreChat panel: same width as the button, animates up from it ---------- */
 .assistant-pop {
-  position: fixed;
-  right: var(--all-padding-l);
-  bottom: var(--all-padding-l);
+  position: absolute;
+  left: 0;
+  right: 0;                         /* same width as the button */
+  top: 0;                           /* extend up to the top of the metric tree */
+  bottom: calc(var(--base-56) + var(--group-gap-l));
   z-index: 60;
-  width: var(--base-348);
-  height: min(var(--base-348) * 2, calc(100vh - var(--base-176)));
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -554,19 +638,19 @@ body {
   box-shadow: 0 var(--shadow-y-l) var(--shadow-blur-l) var(--shadow-base),
               0 var(--shadow-y-m) var(--shadow-blur-m) var(--shadow-spread);
   opacity: 0;
-  transform: translateY(var(--base-14)) scale(0.98);
-  transform-origin: bottom right;
+  transform: translateY(var(--base-12)) scaleY(0.96);
+  transform-origin: bottom center;
   pointer-events: none;
-  transition: opacity 0.18s ease, transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: opacity 0.2s ease, transform 0.28s cubic-bezier(0.16, 1, 0.3, 1);
 }
-.assistant-pop.open { opacity: 1; transform: translateY(0) scale(1); pointer-events: auto; }
+.assistant-pop.open { opacity: 1; transform: translateY(0) scaleY(1); pointer-events: auto; }
 .assistant-pop-head {
   flex: none;
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: var(--all-padding-s);
-  color: var(--bg-canvas);
+  color: var(--on-accent);
   background: linear-gradient(140deg, var(--content-secondary-dark), var(--content-secondary-bright));
 }
 .ap-title { display: flex; align-items: center; gap: var(--group-gap-xl); }
@@ -578,13 +662,13 @@ body {
   align-items: center;
   justify-content: center;
   border-radius: var(--all-radius-xs);
-  background: color-mix(in srgb, var(--bg-canvas) 18%, transparent);
+  background: color-mix(in srgb, var(--on-accent) 18%, transparent);
 }
 .ap-avatar svg { width: var(--icon-m); height: var(--icon-m); }
 .ap-titles { display: flex; flex-direction: column; }
 .ap-name { font-size: var(--font-size-body-2); font-weight: 600; }
 .ap-status { display: flex; align-items: center; gap: var(--group-gap-l); font-size: var(--font-size-caption-2); opacity: 0.85; }
-.ap-live { width: var(--group-gap-l); height: var(--group-gap-l); border-radius: var(--round); background: var(--bg-canvas); }
+.ap-live { width: var(--group-gap-l); height: var(--group-gap-l); border-radius: var(--round); background: var(--on-accent); }
 .ap-close {
   flex: none;
   display: flex;
@@ -594,12 +678,12 @@ body {
   height: var(--icon-xl);
   border: none;
   border-radius: var(--all-radius-xs);
-  background: color-mix(in srgb, var(--bg-canvas) 16%, transparent);
-  color: var(--bg-canvas);
+  background: color-mix(in srgb, var(--on-accent) 16%, transparent);
+  color: var(--on-accent);
   cursor: pointer;
   transition: background 0.15s ease;
 }
-.ap-close:hover { background: color-mix(in srgb, var(--bg-canvas) 30%, transparent); }
+.ap-close:hover { background: color-mix(in srgb, var(--on-accent) 30%, transparent); }
 .ap-close svg { width: var(--icon-m); height: var(--icon-m); }
 .assistant-pop-body { flex: 1; min-height: 0; background: var(--bg-surface); }
 .assistant-frame { width: 100%; height: 100%; border: 0; }
