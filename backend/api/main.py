@@ -70,6 +70,24 @@ def investigate(req: InvestigateRequest) -> EvidenceBundle:
     return pipeline.run_investigation(req.metric, req.window)
 
 
+@app.post("/narrate/{investigation_id}", response_model=EvidenceBundle)
+def narrate_bundle(investigation_id: str) -> EvidenceBundle:
+    """Add prose to a stored investigation.
+
+    Split from /investigate so the UI shows real numbers in ~2s and only then the sentence
+    arrives. The generation span reattaches to the trace the investigation already opened, so
+    a judge reads one investigation rather than two unrelated traces.
+
+    An LLM failure returns 200 with `narrative: null` rather than an error: the numbers,
+    drilldown and ruled-out list are already computed and scoreable, so a Bedrock outage
+    degrades the answer instead of losing it.
+    """
+    bundle = pipeline.narrate_investigation(investigation_id)
+    if bundle is None:
+        raise HTTPException(status_code=404, detail=f"No investigation {investigation_id!r}")
+    return bundle
+
+
 @app.get("/bundle/{investigation_id}", response_model=EvidenceBundle)
 def get_bundle(investigation_id: str) -> EvidenceBundle:
     """Retrieve a stored Evidence Bundle.
@@ -115,16 +133,19 @@ def _method_from_model(model: str | None) -> str | None:
 def _run_investigation(
     slots: chatlib.Slots, session_id: str, method: str | None = None
 ) -> EvidenceBundle:
-    """Run a detection-grade investigation for the chat, via the caller's chosen method.
+    """Real detection (statistical/ML) for the bundle, then trace-reattached narration.
 
-    Goes through `pipeline.run_detection`: REAL detection from ClickHouse (statistical or ML) +
-    Bedrock narration, traced and persisted, with session_id grouping the conversation's traces
-    in Langfuse. Segment localization awaits Lane B's decompose/drill.
+    `pipeline.run_detection` runs REAL ClickHouse detection via the chosen method and persists an
+    un-narrated bundle; `pipeline.narrate_investigation` then adds prose whose generation span
+    reattaches to the same trace. The two-step split (JAL-80) means a Bedrock failure costs the
+    sentence, not the whole scoreable bundle. session_id groups the conversation's traces in
+    Langfuse; segment localization awaits Lane B's decompose/drill.
     """
     window = Window(start=slots.window_start, end=slots.window_end or slots.window_start)
-    return pipeline.run_detection(
+    bundle = pipeline.run_detection(
         slots.metric or "revenue", window, method=method, session_id=session_id
     )
+    return pipeline.narrate_investigation(bundle.investigation_id) or bundle
 
 
 def _diagnosis_text(bundle: EvidenceBundle) -> str:
@@ -134,7 +155,9 @@ def _diagnosis_text(bundle: EvidenceBundle) -> str:
     reading the conversation should see the localized segment and what was ruled out without
     opening the dashboard.
     """
-    lines = [bundle.narrative or "(no narrative generated)"]
+    # Narration can fail (no AWS credentials, model unavailable). Say so plainly rather than
+    # printing a placeholder that reads like a broken system - the evidence below is still real.
+    lines = [bundle.narrative or "_Narration unavailable; the computed evidence follows._"]
     if bundle.localized_segment:
         segment = " AND ".join(f"{k}={v}" for k, v in bundle.localized_segment.items())
         lines.append(f"\n**Localized to:** {segment}")

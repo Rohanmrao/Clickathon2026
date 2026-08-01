@@ -24,7 +24,7 @@ from pathlib import Path
 
 from data import store
 from models import EvidenceBundle, Window
-from narrator.tracing import investigation_trace
+from narrator.tracing import investigation_trace, narration_span
 
 log = logging.getLogger(__name__)
 
@@ -112,14 +112,14 @@ def run_detection(
     method: str | None = None,
     session_id: str | None = None,
 ) -> EvidenceBundle:
-    """Detection-grade investigation for the chat endpoint: REAL detection from ClickHouse via
-    the chosen method, narrated by Bedrock, all inside one Langfuse trace.
+    """Detection-grade investigation for the chat: REAL detection from ClickHouse via the chosen
+    method, traced and persisted. Returns the bundle WITHOUT a narrative - the chat adds prose via
+    narrate_investigation(), so the generation span reattaches to this trace and an LLM failure
+    cannot destroy a valid bundle (the same investigate/narrate split as run_investigation).
 
-    Unlike run_investigation (full bundle, still fixture-backed until Lane B's build_bundle lands),
-    this runs only the parts that ARE implemented today: detection.detect() and narrate(). Segment
-    localization (decompose/drill) is left EMPTY rather than faked - honest is the whole point.
+    Runs only the parts implemented today: detection.detect(). Segment localization (decompose/
+    drill) is left EMPTY rather than faked - honest is the whole point.
     """
-    from narrator.narrate import narrate
     from rca.detection import detect
 
     investigation_id = str(uuid.uuid4())
@@ -131,8 +131,9 @@ def run_detection(
         # midnight. `detect` is called per hour via the same chosen method.
         anomaly, queries, hour = _scan_window(metric, window, detector)
         bundle = _detection_bundle(investigation_id, metric, hour, anomaly, queries, detector)
+        bundle.narrative = None  # investigate/narrate split; narrate_investigation adds prose
+        bundle.narrative_verification = None
         bundle.trace_url = trace.url
-        narrate(bundle)  # Bedrock; the generation span nests inside this trace
         store.save_bundle(bundle, trace_id=trace.trace_id, session_id=session_id)
 
     return bundle
@@ -202,3 +203,55 @@ def _detection_bundle(investigation_id, metric, window, anomaly, queries, detect
         ruled_out=[],
         queries=[Query(**q) for q in queries],
     )
+
+
+def narrate_investigation(investigation_id: str) -> EvidenceBundle | None:
+    """Add prose to a stored bundle. Returns None if the investigation does not exist.
+
+    Three things this must guarantee, in order of importance:
+
+    1. The generation span lands in the trace the investigation already opened, so a judge
+       reads one coherent investigation rather than two unrelated traces.
+    2. The guardrail runs on the result. Every number in the prose must already exist in the
+       bundle; a fabricated figure costs more than a missed anomaly.
+    3. An LLM failure never destroys a valid bundle. The numbers, drilldown and ruled-out
+       list are already computed and scoreable - narration is a presentation layer, so a
+       Bedrock outage degrades the answer instead of losing it.
+    """
+    bundle = store.load_bundle(investigation_id)
+    if bundle is None:
+        return None
+
+    trace_id = store.load_trace_id(investigation_id)
+
+    with narration_span(trace_id, bundle.metric) as span:
+        try:
+            from narrator.narrate import narrate
+
+            bundle = narrate(bundle)
+        except Exception as exc:  # noqa: BLE001 - any LLM/transport failure is non-fatal here
+            log.warning("Narration failed for %s: %s", investigation_id, exc)
+            bundle.narrative = None
+            bundle.narrative_verification = None
+            if span is not None:
+                span.update(output={"error": str(exc)}, level="ERROR")
+        else:
+            if span is not None:
+                verification = bundle.narrative_verification
+                span.update(
+                    input={"investigation_id": investigation_id, "metric": bundle.metric},
+                    output=bundle.narrative,
+                    metadata={
+                        "guardrail_passed": bool(verification and verification.passed),
+                        "unverified_numbers": list(verification.unverified_numbers)
+                        if verification else [],
+                    },
+                )
+            if bundle.narrative_verification and not bundle.narrative_verification.passed:
+                log.warning(
+                    "Guardrail FAILED for %s - numbers not in bundle: %s",
+                    investigation_id, bundle.narrative_verification.unverified_numbers,
+                )
+
+    store.save_bundle(bundle, trace_id=trace_id)
+    return bundle
