@@ -31,7 +31,12 @@ CLICKHOUSE = {
 LANGFUSE = {
     "public_key": env("LANGFUSE_PUBLIC_KEY"),
     "secret_key": env("LANGFUSE_SECRET_KEY"),
+    # SDK ingestion host. In Docker this is the internal service (langfuse-web:3000).
     "host": env("LANGFUSE_HOST", "http://localhost:3000"),
+    # Browser-facing base for trace LINKS. The SDK bakes `host` into get_trace_url(), but a
+    # container-internal host (langfuse-web:3000) can't be opened from the host browser — so
+    # trace URLs are rewritten to this. Defaults to `host` (correct for a host venv run).
+    "public_host": env("LANGFUSE_PUBLIC_HOST") or env("LANGFUSE_HOST", "http://localhost:3000"),
 }
 
 # AWS Bedrock — auth comes from the standard AWS credential chain (aws cli / env / role),

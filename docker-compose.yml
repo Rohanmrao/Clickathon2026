@@ -46,8 +46,10 @@ services:
       - "8000:8000"
     env_file: .env
     environment:
-      # Inside the compose network, Langfuse is the web service name — not localhost.
+      # SDK ingests to the internal service name; trace LINKS use the browser-facing host, since
+      # the host browser can't resolve langfuse-web. Without the split, "Open trace" dead-links.
       LANGFUSE_HOST: http://langfuse-web:3000
+      LANGFUSE_PUBLIC_HOST: http://localhost:3000
     depends_on:
       langfuse-web:
         condition: service_started
