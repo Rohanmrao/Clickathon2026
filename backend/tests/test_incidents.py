@@ -176,3 +176,176 @@ def test_score_weights_severity_by_volume():
 def test_scan_rejects_unknown_grain():
     with pytest.raises(ValueError, match="grain"):
         inc.scan_incidents(D(1), D(5), grain="fortnight")
+
+
+# ---- classify_echoes -------------------------------------------------------
+
+def _inc(metric, day, days=1, score=100.0):
+    return inc.Incident(
+        metric=metric, window_start=D(day), window_end=D(day) + timedelta(days=days),
+        direction="drop", peak_z=-10.0, peak_pct_delta=-0.2, observed=0.5, expected=0.7,
+        affected_requests=10_000, buckets=days, score=score,
+    )
+
+
+def test_segment_rows_of_a_global_event_are_echoes():
+    """The Jun 21 collapse hit every segment; those rows are one event, not many."""
+    rows = inc.classify_echoes([
+        _inc("requests", 21, score=500),
+        _inc("requests[region=NAM]", 21, score=200),
+        _inc("requests[campaign_type=CPM]", 21, score=150),
+    ])
+    by = {r["metric"]: r for r in rows}
+    assert by["requests"]["role"] == "primary"
+    assert by["requests[region=NAM]"]["role"] == "echo"
+    assert by["requests[campaign_type=CPM]"]["role"] == "echo"
+    assert "population-wide" in by["requests[region=NAM]"]["echo_of"]
+
+
+def test_correlated_segments_collapse_to_the_strongest():
+    """APAC / JP / iPhone 14 all lit up because iOS 18.1 is common there — same window."""
+    rows = inc.classify_echoes([
+        _inc("fill_rate[os_version=iOS 18.1]", 28, days=3, score=10_280),
+        _inc("fill_rate[region=APAC]", 28, days=3, score=9_288),
+        _inc("fill_rate[country=JP]", 28, days=3, score=5_891),
+    ])
+    by = {r["metric"]: r for r in rows}
+    assert by["fill_rate[os_version=iOS 18.1]"]["role"] == "primary"
+    assert by["fill_rate[region=APAC]"]["role"] == "echo"
+    assert by["fill_rate[country=JP]"]["role"] == "echo"
+
+
+def test_independent_anomalies_sharing_a_couple_of_days_stay_separate():
+    """Regression: ecpm native (Jun 16-20) and ecpm finance (Jun 19-22) are DIFFERENT planted
+    anomalies overlapping by 2 of 7 days. An any-overlap rule marked finance an echo and hid
+    it entirely; window similarity (Jaccard 0.29 < 0.6) keeps both."""
+    rows = inc.classify_echoes([
+        _inc("ecpm[ad_format=native]", 16, days=5, score=24_607),
+        _inc("ecpm[category=finance]", 19, days=4, score=23_237),
+    ])
+    assert all(r["role"] == "primary" for r in rows)
+
+
+def test_base_metric_strips_the_segment_suffix():
+    assert inc.base_metric("fill_rate[os_version=iOS 18.1]") == "fill_rate"
+    assert inc.base_metric("revenue") == "revenue"
+
+
+# ---- fold_revenue_identity / fold_volume_driven_noise -----------------------
+
+def _row(metric, day, days=1, score=100.0, buckets=None, localized=None):
+    row = _inc(metric, day, days=days, score=score).as_dict()
+    row["role"] = "primary"
+    row["buckets"] = buckets if buckets is not None else days
+    if localized is not None:
+        row["localized"] = localized
+    return row
+
+
+def test_revenue_explained_by_same_segment_factor():
+    """ecpm[category=finance] and revenue[category=finance] are the same 4-day window —
+    revenue is a mathematical consequence of ecpm here, not a second finding."""
+    rows = [
+        _row("ecpm[category=finance]", 19, days=4, score=23_237),
+        _row("revenue[category=finance]", 19, days=4, score=20_632),
+    ]
+    inc.fold_revenue_identity(rows)
+    by = {r["metric"]: r for r in rows}
+    assert by["ecpm[category=finance]"]["role"] == "primary"
+    assert by["revenue[category=finance]"]["role"] == "echo"
+    assert "revenue identity" in by["revenue[category=finance]"]["echo_of"]
+
+
+def test_revenue_explained_by_global_factors_localized_segment():
+    """fill_rate is GLOBAL but drilled to os_version=Android 15 — a revenue row for that same
+    segment is explained by it even though neither metric string mentions the other."""
+    rows = [
+        _row("fill_rate", 23, days=3, score=37_706, localized={"os_version": "Android 15"}),
+        _row("revenue[os_version=Android 15]", 21, days=5, score=51_950),
+    ]
+    inc.fold_revenue_identity(rows)
+    by = {r["metric"]: r for r in rows}
+    assert by["revenue[os_version=Android 15]"]["role"] == "echo"
+
+
+def test_revenue_not_folded_without_overlap_or_match():
+    """Different segment, no overlap — must stay primary (don't over-fold)."""
+    rows = [
+        _row("fill_rate[os_version=Android 15]", 23, days=3, score=10_000),
+        _row("revenue[country=JP]", 1, days=1, score=500),
+    ]
+    inc.fold_revenue_identity(rows)
+    assert rows[1]["role"] == "primary"
+
+
+def test_ctr_blip_explained_by_contained_global_volume_event():
+    """ctr[country=ZA], single bucket, Jun 21 — fully inside the global requests collapse
+    window. Sample-size noise, not an independent finding."""
+    rows = [
+        _row("requests", 21, days=1, score=54_826),
+        _row("ctr[country=ZA]", 21, days=1, score=2_607),
+    ]
+    inc.fold_volume_driven_noise(rows)
+    by = {r["metric"]: r for r in rows}
+    assert by["ctr[country=ZA]"]["role"] == "echo"
+    assert "sample-size noise" in by["ctr[country=ZA]"]["echo_of"]
+
+
+def test_multi_bucket_finding_not_swallowed_by_volume_fold():
+    """A genuinely independent 3-day finding must NOT be folded just because a 1-day volume
+    event happens to precede it - it isn't fully contained, so it survives."""
+    rows = [
+        _row("requests", 21, days=1, score=54_826),
+        _row("fill_rate[os_version=iOS 18.1]", 28, days=3, score=10_280),
+    ]
+    inc.fold_volume_driven_noise(rows)
+    assert rows[1]["role"] == "primary"
+
+
+def test_volume_fold_ignores_requests_and_revenue_themselves():
+    """requests/revenue rows are the volume events - they should never fold into each other
+    just because their windows happen to touch."""
+    rows = [
+        _row("requests", 21, days=1, score=54_826),
+        _row("revenue", 21, days=1, score=56_486),
+    ]
+    inc.fold_volume_driven_noise(rows)
+    assert rows[0]["role"] == "primary" and rows[1]["role"] == "primary"
+
+
+# ---- fold_contained_same_metric ---------------------------------------------
+
+def test_sub_window_folds_into_the_larger_same_metric_event():
+    """fill_rate[country=JP], 1 day, sits entirely inside the 3-day fill_rate Android 15
+    event - a weaker echo of the same thing, not an independent JP-specific problem."""
+    rows = [
+        _row("fill_rate", 23, days=3, score=37_706),
+        _row("fill_rate[country=JP]", 25, days=1, score=552),
+    ]
+    inc.fold_contained_same_metric(rows)
+    by = {r["metric"]: r for r in rows}
+    assert by["fill_rate[country=JP]"]["role"] == "echo"
+    assert "same metric" in by["fill_rate[country=JP]"]["echo_of"]
+
+
+def test_independent_overlapping_anomalies_still_not_folded():
+    """Regression guard: ecpm native (Jun 16-20) and ecpm finance (Jun 19-22) partially
+    overlap but NEITHER contains the other - must stay separate, same as the Jaccard test."""
+    rows = [
+        _row("ecpm[ad_format=native]", 16, days=5, score=24_607),
+        _row("ecpm[category=finance]", 19, days=4, score=23_237),
+    ]
+    inc.fold_contained_same_metric(rows)
+    assert all(r["role"] == "primary" for r in rows)
+
+
+def test_weaker_container_does_not_swallow_a_stronger_row():
+    """A low-score row must never absorb a HIGHER-score row just because its window is
+    wider - containment only folds the weaker finding into the stronger one."""
+    rows = [
+        _row("fill_rate", 23, days=1, score=10),          # wide-ish but weak
+        _row("fill_rate[country=JP]", 23, days=1, score=999_999),  # tiny window, huge score
+    ]
+    inc.fold_contained_same_metric(rows)
+    by = {r["metric"]: r for r in rows}
+    assert by["fill_rate[country=JP]"]["role"] == "primary"

@@ -11,10 +11,12 @@ even though the arithmetic runs in Python.
 from __future__ import annotations
 
 from datetime import datetime
+from functools import lru_cache
 
 import pandas as pd
 
 from config import config
+from data.calibration import effect_threshold
 from data.client import run_query
 from metrics import metric_sql
 from models import Anomaly, Window
@@ -25,6 +27,20 @@ _HOURLY = config()["clickhouse"]["hourly_table"]
 
 def _series_sql(metric: str) -> str:
     return f"SELECT hour, {metric_sql(metric, 'rollup')} AS value FROM {_HOURLY} GROUP BY hour ORDER BY hour"
+
+
+@lru_cache(maxsize=None)
+def _cached_series(metric: str) -> tuple[tuple, tuple, str]:
+    """Same fix as isolation_forest._cached_series — the series is identical for every target
+    hour scored against the same metric, so a sweep of N buckets was refetching the same
+    ~840-row query N times. See that module's docstring for the measured cost."""
+    res = run_query(_series_sql(metric))
+    return tuple(map(tuple, res["rows"])), tuple(res["columns"]), res["resolved_sql"]
+
+
+def reset_cache() -> None:
+    """Drop the cached series. Call after loading a new dataset within a running process."""
+    _cached_series.cache_clear()
 
 
 def score_series(
@@ -62,13 +78,19 @@ def run(metric: str, target: Window) -> tuple[Anomaly, list[dict]]:
     """Score the GLOBAL metric at the target hour via the seasonal model. Returns (Anomaly, queries)."""
     det = config()["detection"]  # read fresh so in-memory overrides take effect
     sea = det["seasonal_ml"]
-    res = run_query(_series_sql(metric))
-    hours = [r[0] for r in res["rows"]]
-    values = [r[1] for r in res["rows"]]
+    rows, _columns, resolved_sql = _cached_series(metric)
+    hours = [r[0] for r in rows]
+    values = [r[1] for r in rows]
+    # min_pct is the SAME per-metric, auto-calibrated floor robust_z uses (data.calibration),
+    # not sea["min_pct_delta"] — that flat 5% has no idea ctr needs ~84% and fill_rate needs
+    # ~3%. Without this, seasonal_ml flagged ctr on an ordinary window that robust_z correctly
+    # left alone (score 42,908 vs nothing) — not a real finding, just an uncalibrated gate.
     anomaly = score_series(
         hours, values, target.start, det["mad_scale"],
-        sea["residual_z_threshold"], sea["min_pct_delta"],
+        sea["residual_z_threshold"], effect_threshold(metric),
     )
-    query = {"id": "q_seasonal_series", "sql": res["resolved_sql"],
+    # resolved_sql logged every call for traceability, even when served from cache — it is the
+    # same real query that produced this data the first time and would again if re-run.
+    query = {"id": "q_seasonal_series", "sql": resolved_sql,
              "result_summary": {"n_hours": len(hours), "observed": anomaly.observed, "expected": anomaly.expected}}
     return anomaly, [query]
