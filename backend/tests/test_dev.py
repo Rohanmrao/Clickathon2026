@@ -126,6 +126,41 @@ def test_run_detect_reports_score_kind():
     assert "score_kind" in r
 
 
+def test_run_engine_benchmark_summarizes_each_bundle():
+    from types import SimpleNamespace
+
+    def fake_build_bundle(metric, window):
+        return SimpleNamespace(
+            anomaly=SimpleNamespace(detected=True, score=1.234),
+            factor_decomposition=SimpleNamespace(primary_factor="fill_rate"),
+            localized_segment={"os_version": "Android 15"},
+            ruled_out=[SimpleNamespace(hypothesis="ecpm_price")],
+            queries=[1, 2, 3, 4, 5],
+        )
+
+    with patch.object(dev, "build_bundle", fake_build_bundle):
+        rows = dev.run_engine_benchmark()
+    assert len(rows) == len(dev.benchmark_cases())   # one row per ground-truth case (not hardcoded)
+    a = next(r for r in rows if r["id"] == "A")
+    assert a["primary_factor"] == "fill_rate"
+    assert a["localized"] == {"os_version": "Android 15"}
+    assert a["hit"] is True                       # matches case A ground truth
+    assert a["ruled_out"] == ["ecpm_price"]
+    assert a["n_queries"] == 5
+    assert "start" in a and "end" in a           # so the row can be clicked to view its bundle
+    assert next(r for r in rows if r["id"] == "B")["hit"] is False
+
+
+def test_full_bundle_serializes_the_built_bundle():
+    class FakeBundle:
+        def model_dump(self, **kwargs):
+            return {"metric": "revenue", "anomaly": {"detected": True}}
+
+    with patch.object(dev, "build_bundle", lambda metric, window: FakeBundle()):
+        out = dev.full_bundle("revenue", "2026-06-21", "2026-06-22")
+    assert out == {"metric": "revenue", "anomaly": {"detected": True}}
+
+
 def test_run_mega_produces_rows_and_summary():
     def fake_run_detect(metric, at, method=None, overrides=None, segment_aware=False):
         return {"method": method or "robust_z", "anomaly": {"detected": True, "score": 0.5},
