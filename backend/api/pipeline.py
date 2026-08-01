@@ -24,7 +24,7 @@ from pathlib import Path
 
 from data import store
 from models import EvidenceBundle, Window
-from narrator.tracing import investigation_trace
+from narrator.tracing import investigation_trace, narration_span
 
 log = logging.getLogger(__name__)
 
@@ -99,4 +99,56 @@ def run_investigation(
         bundle.trace_url = trace.url
         store.save_bundle(bundle, trace_id=trace.trace_id, session_id=session_id)
 
+    return bundle
+
+
+def narrate_investigation(investigation_id: str) -> EvidenceBundle | None:
+    """Add prose to a stored bundle. Returns None if the investigation does not exist.
+
+    Three things this must guarantee, in order of importance:
+
+    1. The generation span lands in the trace the investigation already opened, so a judge
+       reads one coherent investigation rather than two unrelated traces.
+    2. The guardrail runs on the result. Every number in the prose must already exist in the
+       bundle; a fabricated figure costs more than a missed anomaly.
+    3. An LLM failure never destroys a valid bundle. The numbers, drilldown and ruled-out
+       list are already computed and scoreable - narration is a presentation layer, so a
+       Bedrock outage degrades the answer instead of losing it.
+    """
+    bundle = store.load_bundle(investigation_id)
+    if bundle is None:
+        return None
+
+    trace_id = store.load_trace_id(investigation_id)
+
+    with narration_span(trace_id, bundle.metric) as span:
+        try:
+            from narrator.narrate import narrate
+
+            bundle = narrate(bundle)
+        except Exception as exc:  # noqa: BLE001 - any LLM/transport failure is non-fatal here
+            log.warning("Narration failed for %s: %s", investigation_id, exc)
+            bundle.narrative = None
+            bundle.narrative_verification = None
+            if span is not None:
+                span.update(output={"error": str(exc)}, level="ERROR")
+        else:
+            if span is not None:
+                verification = bundle.narrative_verification
+                span.update(
+                    input={"investigation_id": investigation_id, "metric": bundle.metric},
+                    output=bundle.narrative,
+                    metadata={
+                        "guardrail_passed": bool(verification and verification.passed),
+                        "unverified_numbers": list(verification.unverified_numbers)
+                        if verification else [],
+                    },
+                )
+            if bundle.narrative_verification and not bundle.narrative_verification.passed:
+                log.warning(
+                    "Guardrail FAILED for %s - numbers not in bundle: %s",
+                    investigation_id, bundle.narrative_verification.unverified_numbers,
+                )
+
+    store.save_bundle(bundle, trace_id=trace_id)
     return bundle

@@ -70,6 +70,24 @@ def investigate(req: InvestigateRequest) -> EvidenceBundle:
     return pipeline.run_investigation(req.metric, req.window)
 
 
+@app.post("/narrate/{investigation_id}", response_model=EvidenceBundle)
+def narrate_bundle(investigation_id: str) -> EvidenceBundle:
+    """Add prose to a stored investigation.
+
+    Split from /investigate so the UI shows real numbers in ~2s and only then the sentence
+    arrives. The generation span reattaches to the trace the investigation already opened, so
+    a judge reads one investigation rather than two unrelated traces.
+
+    An LLM failure returns 200 with `narrative: null` rather than an error: the numbers,
+    drilldown and ruled-out list are already computed and scoreable, so a Bedrock outage
+    degrades the answer instead of losing it.
+    """
+    bundle = pipeline.narrate_investigation(investigation_id)
+    if bundle is None:
+        raise HTTPException(status_code=404, detail=f"No investigation {investigation_id!r}")
+    return bundle
+
+
 @app.get("/bundle/{investigation_id}", response_model=EvidenceBundle)
 def get_bundle(investigation_id: str) -> EvidenceBundle:
     """Retrieve a stored Evidence Bundle.
