@@ -129,8 +129,11 @@ def run_detection(
         # The detectors are hour-grain; a chat window is usually a whole day. Scan the day's hours
         # and report the worst one, so we surface the planted anomaly rather than whatever sits at
         # midnight. `detect` is called per hour via the same chosen method.
-        anomaly, queries, hour = _scan_window(metric, window, detector)
+        anomaly, queries, hour, segment = _scan_window(metric, window, detector)
         bundle = _detection_bundle(investigation_id, metric, hour, anomaly, queries, detector)
+        # Record WHERE it was found. Empty = the move is population-wide, which is a real
+        # finding in its own right (e.g. the Jun 21 collapse), not a missing localization.
+        bundle.localized_segment = segment
         bundle.narrative = None  # investigate/narrate split; narrate_investigation adds prose
         bundle.narrative_verification = None
         bundle.trace_url = trace.url
@@ -150,20 +153,19 @@ def _hours_in(window: Window) -> list:
 
 
 def _scan_window(metric: str, window: Window, detector: str | None):
-    """Score every hour in the window via the chosen detector; return the worst hour's
-    (anomaly, queries, hour-window). Prefers a detected anomaly, then the most extreme score."""
-    from datetime import timedelta
+    """Segment-aware scan of the window; returns (anomaly, queries, hour-window, segment).
 
-    from rca.detection import detect
+    Delegates to rca.detection.detect_in_window: score every hour globally, and only if nothing
+    fires, look inside the population per dimension. Global-only scoring is blind to a localised
+    anomaly by construction (the APAC x iOS 18.1 fill_rate drop is -51% in-segment but -1.2%
+    globally), so this is what takes detection from 3/5 to 5/5 on the ground-truth cases.
 
-    best = None
-    for hour in _hours_in(window):
-        target = Window(start=hour, end=hour + timedelta(hours=1))
-        anomaly, queries = detect(metric, target, detector)
-        rank = (anomaly.detected, abs(anomaly.score))
-        if best is None or rank > best[0]:
-            best = (rank, anomaly, queries, target)
-    return best[1], best[2], best[3]
+    `segment` is {} when the move really is population-wide — which is the correct answer for a
+    global event, not a failure to localise.
+    """
+    from rca.detection import detect_in_window
+
+    return detect_in_window(metric, window, detector)
 
 
 def _round_anomaly(anomaly):
