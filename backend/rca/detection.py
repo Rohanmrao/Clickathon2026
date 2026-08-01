@@ -1,18 +1,35 @@
-"""Lane B: detection. Like-for-like baseline (same weekday+hour, median/MAD over trailing weeks)."""
+"""Lane B: detection dispatcher.
+
+Selects a detector strategy from config.detection.method and delegates. Every detector returns the
+identical (Anomaly, queries) contract, so everything downstream is agnostic to which one ran.
+
+  * robust_z    — deterministic like-for-like baseline (median/MAD over trailing weeks). Default.
+  * seasonal_ml — unsupervised seasonal-residual model over all history.
+"""
 from __future__ import annotations
+
+from collections.abc import Callable
 
 from config import config
 from models import Anomaly, Window
+from rca.detectors import isolation_forest, robust_z, seasonal_ml
+
+Runner = Callable[[str, Window], "tuple[Anomaly, list[dict]]"]
+
+_DETECTORS: dict[str, Runner] = {
+    "robust_z": robust_z.run,
+    "seasonal_ml": seasonal_ml.run,
+    "isolation_forest": isolation_forest.run,
+}
+
+
+def _select(method: str) -> Runner:
+    try:
+        return _DETECTORS[method]
+    except KeyError:
+        raise ValueError(f"unknown detection method: {method!r} (known: {sorted(_DETECTORS)})")
 
 
 def detect(metric: str, target: Window) -> tuple[Anomaly, list[dict]]:
-    """Return (Anomaly, queries) for `metric` over `target`.
-
-    Baseline = same weekday + hour-of-day, robust (median/MAD) over trailing N weeks.
-    Threshold from config.detection.mad_z_threshold. Weekends must NOT fire; the planted
-    pure-seasonality decoy must end up ruled out, not alarmed.
-    """
-    cfg = config()["detection"]  # noqa: F841  (grain, baseline_weeks, mad_z_threshold)
-    # TODO(Lane B): compute baseline via data.client.run_query against hourly_summary,
-    #   return the Anomaly and the list of {id, sql, result_summary} queries used.
-    raise NotImplementedError("Lane B: implement detect — see prompts/02-detection-rca.md")
+    """Return (Anomaly, queries) for `metric` at `target`, via the configured detector."""
+    return _select(config()["detection"]["method"])(metric, target)

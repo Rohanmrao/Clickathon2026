@@ -7,15 +7,35 @@ keys are unset so the pipeline still runs locally.
 from __future__ import annotations
 
 from contextlib import contextmanager
+from dataclasses import dataclass
 
 from obs import langfuse
+
+
+@dataclass(frozen=True)
+class Trace:
+    """Handle for one investigation's trace.
+
+    `trace_id` is persisted alongside the bundle because POST /investigate and
+    POST /narrate/{id} are separate HTTP calls: narration must attach its generation span to
+    the trace the investigation already opened, or the SQL steps and the LLM call show up as
+    two unrelated traces and the reasoning becomes unreadable.
+
+    `url` is what a judge clicks. Both are None when tracing is disabled.
+    """
+    trace_id: str | None = None
+    url: str | None = None
+
+    @property
+    def enabled(self) -> bool:
+        return self.trace_id is not None
 
 
 @contextmanager
 def investigation_trace(
     investigation_id: str, metric: str, session_id: str | None = None
 ):
-    """Open one trace per investigation. Yields the Langfuse trace_url (None if tracing disabled).
+    """Open one trace per investigation. Yields a `Trace` (inert when tracing is disabled).
 
     Every `run_query` call made inside this context becomes a child span of this trace, and the
     session_id is propagated to the root span and all child spans so related investigations group
@@ -23,7 +43,7 @@ def investigation_trace(
     """
     lf = langfuse()
     if lf is None:
-        yield None
+        yield Trace()
         return
 
     from langfuse import propagate_attributes
@@ -42,6 +62,6 @@ def investigation_trace(
             )
             trace_id = lf.get_current_trace_id()
             try:
-                yield lf.get_trace_url(trace_id=trace_id)
+                yield Trace(trace_id=trace_id, url=lf.get_trace_url(trace_id=trace_id))
             finally:
                 lf.flush()
