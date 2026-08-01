@@ -10,7 +10,8 @@ from the repo root. **Only prerequisite:** you've done the one-time setup once (
 | `backend\oneclick\compare.ps1` | Run both detectors (robust_z vs seasonal_ml) side by side |
 | `backend\oneclick\tables.ps1` | List ClickHouse tables + row counts (is the DB alive?) |
 | `backend\oneclick\test.ps1` | Run the whole test suite |
-| `backend\oneclick\api.ps1` | Start the API on http://localhost:8000 |
+| `backend\oneclick\api.ps1` | Start the API on http://localhost:8000 (dev console at `/dev`) |
+| `backend\oneclick\load.ps1` | Load ALL data into ClickHouse via CLI (reliable path for the 9M-row job) |
 
 ## Examples
 ```powershell

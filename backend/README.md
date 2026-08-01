@@ -112,6 +112,17 @@ uvicorn api.main:app --reload --port 8000
 # POST http://localhost:8000/investigate  -> Evidence Bundle
 ```
 
+## Dev console (admin + benchmarker)
+Start the API (`.\backend\oneclick\api.ps1`) and open **http://localhost:8000/dev** — a local dev
+dashboard to manage tables/data and benchmark detection:
+- **Tables & Data** — list/preview tables, drop (typed confirm), run the full data load.
+- **Runs** — investigation history + bundle viewer (empty until the pipeline is wired).
+- **Benchmarker** — run `detect()` with live config overrides, compare `robust_z` vs `seasonal_ml`,
+  and run the ground-truth harness (detection-only for now).
+
+Local-dev only: it's gated by env `ENABLE_DEV_DASHBOARD` (default on) — set it to `0` on any deploy.
+For a big data load, prefer the CLI: `.\backend\oneclick\load.ps1` (no `--reload` to interrupt it).
+
 ## Inspect the database (ad-hoc)
 ```bash
 python -c "from data.client import run_query; print([r[0] for r in run_query('SHOW TABLES')['rows']])"
