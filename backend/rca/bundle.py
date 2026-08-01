@@ -15,7 +15,7 @@ from datetime import UTC, datetime, timedelta
 
 from config import config
 from data.client import run_query
-from metrics import metric_sql
+from metrics import metric_sql, safe_div
 from models import (
     Anomaly,
     BaselineWindow,
@@ -32,7 +32,7 @@ from rca.robust import mad, med, robust_z
 _RCA = config()["rca"]
 _DET = config()["detection"]
 _HOURLY = config()["clickhouse"]["hourly_table"]
-_FLAT_MAX = 0.2   # |contribution_pct| below this => the factor is flat -> ruled out
+_FLAT_MOVE = 0.01  # a non-primary factor whose OWN value moved < this (1%) is flat -> ruled out
 _SCORE_PRIORS = 3  # prior same-shape windows sampled to score the anomaly's surprise
 
 # Map an identity factor to the ruled-out hypothesis name the narrator/schema expect.
@@ -134,12 +134,14 @@ def _window_anomaly(metric: str, window: Window) -> tuple[float, float, float, s
 def _ruled_out(factors: FactorDecomposition, query_id: str) -> list[RuledOut]:
     out = []
     for f in factors.factors:
-        if f.factor == factors.primary_factor or abs(f.contribution_pct) >= _FLAT_MAX:
+        # Rule out on the factor's OWN move, not contribution_pct (which can blow up when factors
+        # offset). A factor that barely moved didn't cause the change, whatever its share reads as.
+        move = safe_div(f.to - f.from_, f.from_)
+        if f.factor == factors.primary_factor or abs(move) >= _FLAT_MOVE:
             continue
         out.append(RuledOut(
             hypothesis=_HYPOTHESIS.get(f.factor, f.factor),
-            evidence=f"{f.factor} contributed {f.contribution_pct * 100:.1f}% of the change "
-                     f"({f.from_:.4g} -> {f.to:.4g}) — within noise",
+            evidence=f"{f.factor} moved {move * 100:+.1f}% ({f.from_:.4g} -> {f.to:.4g}) — within noise",
             query_id=query_id,
         ))
     return out

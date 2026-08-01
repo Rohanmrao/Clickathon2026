@@ -140,7 +140,7 @@ def test_run_engine_benchmark_summarizes_each_bundle():
 
     with patch.object(dev, "build_bundle", fake_build_bundle):
         rows = dev.run_engine_benchmark()
-    assert len(rows) == 4
+    assert len(rows) == len(dev.benchmark_cases())   # one row per ground-truth case (not hardcoded)
     a = next(r for r in rows if r["id"] == "A")
     assert a["primary_factor"] == "fill_rate"
     assert a["localized"] == {"os_version": "Android 15"}
