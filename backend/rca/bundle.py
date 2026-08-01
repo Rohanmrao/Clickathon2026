@@ -11,7 +11,7 @@ narrative / trace_url are filled later by Lane C.
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from config import config
 from data.client import run_query
@@ -27,10 +27,13 @@ from models import (
 from rca.decomposition import decompose
 from rca.drilldown import baseline_window, drill
 from rca.incidents import scan_incidents
+from rca.robust import mad, med, robust_z
 
 _RCA = config()["rca"]
+_DET = config()["detection"]
 _HOURLY = config()["clickhouse"]["hourly_table"]
-_FLAT_MAX = 0.2  # |contribution_pct| below this => the factor is flat -> ruled out
+_FLAT_MAX = 0.2   # |contribution_pct| below this => the factor is flat -> ruled out
+_SCORE_PRIORS = 3  # prior same-shape windows sampled to score the anomaly's surprise
 
 # Map an identity factor to the ruled-out hypothesis name the narrator/schema expect.
 _HYPOTHESIS = {"requests": "request_volume", "fill_rate": "fill_rate",
@@ -88,32 +91,42 @@ def _metric_over(metric: str, w: Window) -> tuple[float, str]:
 
 
 def _window_and_anomaly(metric: str, target: Window | None) -> tuple[Window, Anomaly, list[dict]]:
-    """Find the incident window + its anomaly. If nothing fires globally, keep the requested window
-    and report a not-detected anomaly from the window aggregate (drill can still localise it)."""
+    """The incident scanner sets `detected` (and narrows the window when it fires); the anomaly's
+    observed/expected/score are always computed at window grain, so a diluted-but-real move still
+    reports a genuine robust z instead of 0 — the drill-down then localises it."""
     lo, hi = (target.start, target.end) if target else _data_range()
     scan = scan_incidents(lo, hi, metrics=[metric], grain="day")
     incident = next((i for i in scan.incidents if i.metric == metric), None)
+    window = (Window(start=incident.window_start, end=incident.window_end)
+              if incident is not None else (target or Window(start=lo, end=hi)))
 
-    if incident is not None:
-        window = Window(start=incident.window_start, end=incident.window_end)
-        anomaly = Anomaly(
-            detected=True, observed=incident.observed, expected=incident.expected,
-            abs_delta=incident.observed - incident.expected, pct_delta=incident.peak_pct_delta,
-            score=incident.peak_z, direction=incident.direction,
-        )
-        return window, anomaly, list(scan.queries)
-
-    window = target or Window(start=lo, end=hi)
-    observed, sql_obs = _metric_over(metric, window)
-    expected, sql_exp = _metric_over(metric, baseline_window(window))
+    observed, expected, score, direction, q_anom = _window_anomaly(metric, window)
     anomaly = Anomaly(
-        detected=False, observed=observed, expected=expected, abs_delta=observed - expected,
-        pct_delta=(observed - expected) / expected if expected else 0.0, score=0.0,
-        direction="drop" if observed < expected else "spike",
+        detected=incident is not None, observed=observed, expected=expected,
+        abs_delta=observed - expected, pct_delta=(observed - expected) / expected if expected else 0.0,
+        score=score, direction=direction,
     )
-    q_obs = {"id": "q_observed", "sql": sql_obs, "result_summary": {"observed": observed}}
-    q_exp = {"id": "q_expected", "sql": sql_exp, "result_summary": {"expected": expected}}
-    return window, anomaly, [*scan.queries, q_obs, q_exp]
+    return window, anomaly, [*scan.queries, *q_anom]
+
+
+def _window_anomaly(metric: str, window: Window) -> tuple[float, float, float, str, list[dict]]:
+    """Observed over the window vs the median/MAD of prior same-shape windows -> a real robust z."""
+    observed, sql_obs = _metric_over(metric, window)
+    queries = [{"id": "q_observed", "sql": sql_obs, "result_summary": {"observed": observed}}]
+
+    priors = []
+    for w in range(1, _SCORE_PRIORS + 1):
+        shift = timedelta(weeks=w)
+        value, sql = _metric_over(metric, Window(start=window.start - shift, end=window.end - shift))
+        if value:  # 0 => that window is outside the loaded data range; skip it
+            priors.append(value)
+            queries.append({"id": f"q_baseline_{w}w", "sql": sql, "result_summary": {"value": value}})
+
+    center = med(priors) if priors else observed
+    spread = mad(priors, center) if priors else 0.0
+    score = robust_z(observed, center, spread, _DET["mad_scale"])
+    direction = "drop" if observed < center else "spike"
+    return observed, center, score, direction, queries
 
 
 # ---- ruled_out (flat, non-primary factors) — pure --------------------------

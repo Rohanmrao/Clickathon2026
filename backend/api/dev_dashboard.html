@@ -319,15 +319,21 @@ function renderEngine(j){
   if(j.status!=='done' || !j.result){ $('#engine-result').innerHTML = '<span class="pill no">error</span> '+esc(j.log||''); return; }
   const rows = j.result.rows;
   const passed = rows.filter(r=>r.hit).length;
-  $('#engine-result').innerHTML = `<div class="muted" style="margin:8px 0">One EvidenceBundle per case — the real pipeline output. <b>${passed}/${rows.length}</b> localized correctly.</div>
+  $('#engine-result').innerHTML = `<div class="muted" style="margin:8px 0">One EvidenceBundle per case — the real pipeline output. <b>${passed}/${rows.length}</b> localized correctly. <span class="muted">Click a row to view its full bundle JSON.</span></div>
     <table><thead><tr><th>Case</th><th>Metric</th><th>Detected</th><th class="num">Score</th><th>Primary factor</th><th>Localized</th><th>Ruled out</th><th class="num">Queries</th><th>Result</th></tr></thead><tbody>${
-    rows.map(r=>`<tr><td>${esc(r.id)}</td><td>${esc(r.metric)}</td>
+    rows.map(r=>`<tr style="cursor:pointer" onclick="viewBundle('${esc(r.metric)}','${esc(r.start)}','${esc(r.end)}','${esc(r.id)}')"><td>${esc(r.id)}</td><td>${esc(r.metric)}</td>
     <td>${r.error?'<span class="pill no">err</span>':(r.detected?'<span class="pill yes">yes</span>':'<span class="pill no">no</span>')}</td>
     <td class="num">${r.score??''}</td><td class="mono">${esc(r.primary_factor||'')}</td>
     <td class="mono">${esc(r.error?r.error:seg(r.localized))}</td>
     <td class="muted">${esc((r.ruled_out||[]).join(', ')||'—')}</td>
     <td class="num">${r.n_queries??''}</td>
-    <td>${r.error?'':(r.hit?'<span class="pill yes">PASS</span>':'<span class="pill no">FAIL</span>')}</td></tr>`).join('')}</tbody></table>`;
+    <td>${r.error?'':(r.hit?'<span class="pill yes">PASS</span>':'<span class="pill no">FAIL</span>')}</td></tr>`).join('')}</tbody></table>
+    <div id="engine-bundle"></div>`;
+}
+async function viewBundle(metric, start, end, id){
+  $('#engine-bundle').innerHTML = `<div class="card muted">Building bundle for case ${esc(id)} (${esc(metric)})…</div>`;
+  const b = await post('/bundle', {metric, start, end});
+  $('#engine-bundle').innerHTML = `<div class="card"><b>Case ${esc(id)} — full EvidenceBundle</b><pre>${esc(JSON.stringify(b,null,2))}</pre></div>`;
 }
 async function runBench(){
   $('#bench-result').textContent='Running…';

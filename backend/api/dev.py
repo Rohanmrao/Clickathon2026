@@ -287,18 +287,26 @@ def run_engine_benchmark() -> list[dict]:
     out = []
     for case in benchmark_cases():
         window = _case_window(case["window"])
+        row = {"id": case["id"], "metric": case["metric"],
+               "start": window.start.isoformat(), "end": window.end.isoformat()}  # for click-to-view
         try:
             b = build_bundle(case["metric"], window)
-            out.append({
-                "id": case["id"], "metric": case["metric"],
+            row.update({
                 "detected": b.anomaly.detected, "score": round(b.anomaly.score, 2),
                 "primary_factor": b.factor_decomposition.primary_factor,
                 "localized": b.localized_segment, "hit": b.localized_segment == (case["expect_segment"] or {}),
                 "ruled_out": [r.hypothesis for r in b.ruled_out], "n_queries": len(b.queries),
             })
         except Exception as exc:  # noqa: BLE001
-            out.append({"id": case["id"], "metric": case["metric"], "error": str(exc)})
+            row["error"] = str(exc)
+        out.append(row)
     return out
+
+
+def full_bundle(metric: str, start: str, end: str) -> dict:
+    """Build one bundle and return it as schema-shaped JSON (for the click-to-view drawer)."""
+    window = Window(start=datetime.fromisoformat(start), end=datetime.fromisoformat(end))
+    return build_bundle(metric, window).model_dump(mode="json", by_alias=True, exclude_none=True)
 
 
 def start_engine_job() -> dict:
@@ -439,3 +447,14 @@ def mega_endpoint(req: MegaReq) -> dict:
 @router.post("/engine")
 def engine_endpoint() -> dict:
     return start_engine_job()  # background job; poll /dev/jobs/{id} for result
+
+
+class BundleReq(BaseModel):
+    metric: str = "revenue"
+    start: str = "2026-06-21"
+    end: str = "2026-06-22"
+
+
+@router.post("/bundle")
+def bundle_endpoint(req: BundleReq) -> dict:
+    return _guard(full_bundle, req.metric, req.start, req.end)

@@ -143,7 +143,18 @@ def test_run_engine_benchmark_summarizes_each_bundle():
     assert a["hit"] is True                       # matches case A ground truth
     assert a["ruled_out"] == ["ecpm_price"]
     assert a["n_queries"] == 5
+    assert "start" in a and "end" in a           # so the row can be clicked to view its bundle
     assert next(r for r in rows if r["id"] == "B")["hit"] is False
+
+
+def test_full_bundle_serializes_the_built_bundle():
+    class FakeBundle:
+        def model_dump(self, **kwargs):
+            return {"metric": "revenue", "anomaly": {"detected": True}}
+
+    with patch.object(dev, "build_bundle", lambda metric, window: FakeBundle()):
+        out = dev.full_bundle("revenue", "2026-06-21", "2026-06-22")
+    assert out == {"metric": "revenue", "anomaly": {"detected": True}}
 
 
 def test_run_mega_produces_rows_and_summary():

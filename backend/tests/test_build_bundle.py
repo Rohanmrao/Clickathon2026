@@ -44,6 +44,7 @@ def test_case_a_bundle_localizes_and_validates_schema():
     b = bundle.build_bundle("fill_rate", window)
     jsonschema.validate(b.model_dump(mode="json", by_alias=True, exclude_none=True), SCHEMA)   # JAL-38
     assert b.localized_segment == {"os_version": "Android 15"}              # drill localizes the culprit
+    assert b.anomaly.score != 0.0                                           # a real window-level z, not a 0 placeholder
     qids = {q.id for q in b.queries}
     assert all(node.query_id in qids for node in b.drilldown)               # every node traces to a query
 
