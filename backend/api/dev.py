@@ -140,16 +140,17 @@ def _case_target(window: str) -> datetime:
     return datetime.fromisoformat(window.split("..")[0] + "T12:00")
 
 
-def run_benchmark() -> list[dict]:
+def run_benchmark(method: str | None = None, overrides: dict | None = None) -> list[dict]:
+    """Run every case through the chosen detector (defaults to config.detection.method)."""
     out = []
     for case in benchmark_cases():
         target = _case_target(case["window"])
         try:
-            res = run_detect(case["metric"], target.isoformat())
+            res = run_detect(case["metric"], target.isoformat(), method=method, overrides=overrides)
             a = res["anomaly"]
             out.append({
-                "id": case["id"], "metric": case["metric"], "target": target.isoformat(),
-                "detected": a["detected"], "score": round(a["score"], 2),
+                "id": case["id"], "metric": case["metric"], "method": res["method"],
+                "target": target.isoformat(), "detected": a["detected"], "score": round(a["score"], 2),
                 "expect_segment": case["expect_segment"], "localization": "pending (JAL-77)",
             })
         except Exception as exc:  # noqa: BLE001
@@ -187,6 +188,11 @@ class DetectReq(BaseModel):
 class CompareReq(BaseModel):
     metric: str = "revenue"
     at: str = "2026-07-04T10:00"
+
+
+class BenchmarkReq(BaseModel):
+    method: str | None = None
+    overrides: dict | None = None
 
 
 @router.get("", response_class=HTMLResponse)
@@ -248,5 +254,5 @@ def benchmark_cases_endpoint() -> dict:
 
 
 @router.post("/benchmark/run")
-def benchmark_run_endpoint() -> dict:
-    return {"results": run_benchmark()}
+def benchmark_run_endpoint(req: BenchmarkReq) -> dict:
+    return {"results": run_benchmark(req.method, req.overrides)}

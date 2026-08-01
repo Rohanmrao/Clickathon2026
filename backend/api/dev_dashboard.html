@@ -277,8 +277,9 @@ async function doCompare(){
 }
 async function runBench(){
   $('#bench-result').textContent='Running…';
-  const {results} = await post('/benchmark/run',{});
-  $('#bench-result').innerHTML = `<table><thead><tr><th>Case</th><th>Metric</th><th>Target hour</th>
+  const {results} = await post('/benchmark/run',{method:$('#pg-method').value||null, overrides:overrides()});
+  const ran = (results.find(r=>r.method)||{}).method || 'config default';
+  $('#bench-result').innerHTML = `<div class="muted" style="margin-bottom:8px">Ran with method: <b class="mono">${esc(ran)}</b> — set it via the Method dropdown above.</div><table><thead><tr><th>Case</th><th>Metric</th><th>Target hour</th>
     <th>Detected</th><th class="num">Score</th><th>Expected segment</th><th>Localization</th></tr></thead><tbody>${
     results.map(r=>`<tr><td>${esc(r.id)}</td><td>${esc(r.metric)}</td><td class="muted mono">${esc(r.target||'')}</td>
     <td>${r.error?('<span class="pill no">err</span>'):(r.detected?'<span class="pill yes">yes</span>':'<span class="pill no">no</span>')}</td>
