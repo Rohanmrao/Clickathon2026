@@ -1,0 +1,25 @@
+[project]
+name = "rca-analyst"
+version = "0.1.0"
+description = "Automated root-cause analyst — backend (data, RCA, narrator, API)"
+requires-python = ">=3.11"
+dependencies = [
+    "clickhouse-connect>=0.7",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "pydantic>=2.6",
+    "python-dotenv>=1.0",
+    "pandas>=2.2",
+    "langfuse>=2.0",
+    "jsonschema>=4.21",
+    "anthropic>=0.40",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.4"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.pytest.ini_options]
+pythonpath = ["."]

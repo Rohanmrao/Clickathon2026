@@ -1,0 +1,28 @@
+{
+  "clickhouse": {
+    "events_table": "ad_events",
+    "enriched_table": "events_enriched",
+    "hourly_table": "metrics_hourly",
+    "sample_table": "events_sample"
+  },
+  "detection": {
+    "grain": "hour",
+    "baseline_method": "same_weekday_trailing_weeks",
+    "baseline_weeks": 3,
+    "mad_z_threshold": 3.5
+  },
+  "rca": {
+    "revenue_identity_factors": ["requests", "fill_rate", "ecpm"],
+    "drilldown_dimensions": [
+      "region", "country", "os_version", "device_model", "ad_format",
+      "category", "publisher_tier", "vertical", "campaign_type", "app_id", "advertiser_id"
+    ],
+    "stop_contribution_threshold": 0.15,
+    "max_depth": 4
+  },
+  "ruled_out_hypotheses": ["request_volume", "ctr_quality", "ecpm_price", "device_mix", "seasonality"],
+  "narrator": {
+    "max_sentences": 5,
+    "temperature": 0.1
+  }
+}
