@@ -95,9 +95,13 @@ def test_detect_deep_merges_nested_override_and_restores():
     assert config()["detection"] == before       # fully restored
 
 
-def test_benchmark_cases_returns_the_four_ground_truth_cases():
+def test_benchmark_cases_cover_the_known_ground_truth():
     cases = dev.benchmark_cases()
-    assert {c["id"] for c in cases} == {"A", "B", "C", "D"}
+    ids = {c["id"] for c in cases}
+    # The four confirmed planted anomalies. Asserted as a SUBSET, not equality, so adding a
+    # new verified case (e.g. E, the eCPM redistribution negative case) doesn't fail the suite.
+    assert {"A", "B", "C", "D"} <= ids
+    assert all({"id", "metric", "window", "expect_segment"} <= set(c) for c in cases)
 
 
 def test_score_kind_differs_per_method():
@@ -123,8 +127,9 @@ def test_run_detect_reports_score_kind():
 
 
 def test_run_mega_produces_rows_and_summary():
-    def fake_run_detect(metric, at, method=None, overrides=None):
-        return {"method": method or "robust_z", "anomaly": {"detected": True, "score": 0.5}, "queries": []}
+    def fake_run_detect(metric, at, method=None, overrides=None, segment_aware=False):
+        return {"method": method or "robust_z", "anomaly": {"detected": True, "score": 0.5},
+                "queries": [], "found_in_segment": {}}
 
     def fake_drill(metric, factor, target, baseline):
         return [], {"os_version": "Android 15"}, []
@@ -132,7 +137,7 @@ def test_run_mega_produces_rows_and_summary():
     with patch.object(dev, "run_detect", fake_run_detect), patch.object(dev.drilldown, "drill", fake_drill):
         res = dev.run_mega(hours_per_case=2)
     n = len(dev._MEGA_METHODS)
-    assert len(res["rows"]) == n * 4          # variants x 4 cases
+    assert len(res["rows"]) == n * len(dev.benchmark_cases())   # every variant x every case
     assert len(res["summary"]) == n
     assert all("detection_rate" in s for s in res["summary"])
 
@@ -145,8 +150,9 @@ def test_case_window_parses_range_and_single_day():
 
 
 def test_run_benchmark_includes_localization_and_hit():
-    def fake_run_detect(metric, at, method=None, overrides=None):
-        return {"method": method or "robust_z", "score_kind": "z", "anomaly": {"detected": True, "score": 1.0}, "queries": []}
+    def fake_run_detect(metric, at, method=None, overrides=None, segment_aware=False):
+        return {"method": method or "robust_z", "score_kind": "z", "anomaly": {"detected": True, "score": 1.0},
+                "queries": [], "found_in_segment": {}}
 
     def fake_drill(metric, factor, target, baseline):
         return [], {"os_version": "Android 15"}, []  # matches case A's ground truth only
@@ -163,16 +169,18 @@ def test_run_benchmark_includes_localization_and_hit():
 def test_run_benchmark_forwards_method_and_overrides():
     seen = []
 
-    def fake_run_detect(metric, at, method=None, overrides=None):
-        seen.append((metric, method, overrides))
-        return {"method": method or "robust_z", "score_kind": "z", "anomaly": {"detected": True, "score": 1.0}, "queries": []}
+    def fake_run_detect(metric, at, method=None, overrides=None, segment_aware=False):
+        seen.append((metric, method, overrides, segment_aware))
+        return {"method": method or "robust_z", "score_kind": "z", "anomaly": {"detected": True, "score": 1.0},
+                "queries": [], "found_in_segment": {}}
 
     with patch.object(dev, "run_detect", fake_run_detect):
         rows = dev.run_benchmark(method="seasonal_ml", overrides={"min_pct_delta": 0.2})
-    assert len(seen) == 4                                       # all four cases run
-    assert all(m == "seasonal_ml" for _, m, _ in seen)         # chosen method forwarded
-    assert all(o == {"min_pct_delta": 0.2} for *_, o in seen)  # overrides forwarded
-    assert all(r["method"] == "seasonal_ml" for r in rows)     # and reported back per row
+    assert len(seen) == len(dev.benchmark_cases())               # every case runs
+    assert all(m == "seasonal_ml" for _, m, _, _ in seen)        # chosen method forwarded
+    assert all(o == {"min_pct_delta": 0.2} for _, _, o, _ in seen)  # overrides forwarded
+    assert all(sa is True for *_, sa in seen)                    # benchmark must run segment-aware
+    assert all(r["method"] == "seasonal_ml" for r in rows)       # and reported back per row
 
 
 def test_dev_enabled_default_on_and_off(monkeypatch):
