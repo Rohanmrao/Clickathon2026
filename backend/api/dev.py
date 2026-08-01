@@ -26,6 +26,7 @@ from data import store
 from data.client import get_client, run_query
 from models import Window
 from rca import drilldown, incidents
+from rca.bundle import build_bundle
 from rca.detection import detect, detect_in_window
 
 _HTML = Path(__file__).resolve().parent / "dev_dashboard.html"
@@ -335,6 +336,53 @@ def _run_mega_job(job_id: str, hours_per_case: int) -> None:
         _JOBS[job_id].update(status="error", finished=True, log=str(exc))
 
 
+# ---- full engine: build_bundle per case (the real end-to-end EvidenceBundle) ----
+
+def run_engine_benchmark() -> list[dict]:
+    """Run the WHOLE engine (build_bundle) per ground-truth case and summarize each bundle.
+
+    Method-independent (build_bundle uses the incident scanner + deterministic decompose/drill), so
+    it's one bundle per case — the end-to-end artifact, not just detect/drill."""
+    out = []
+    for case in benchmark_cases():
+        window = _case_window(case["window"])
+        row = {"id": case["id"], "metric": case["metric"],
+               "start": window.start.isoformat(), "end": window.end.isoformat()}  # for click-to-view
+        try:
+            b = build_bundle(case["metric"], window)
+            row.update({
+                "detected": b.anomaly.detected, "score": round(b.anomaly.score, 2),
+                "primary_factor": b.factor_decomposition.primary_factor,
+                "localized": b.localized_segment, "hit": b.localized_segment == (case["expect_segment"] or {}),
+                "ruled_out": [r.hypothesis for r in b.ruled_out], "n_queries": len(b.queries),
+            })
+        except Exception as exc:  # noqa: BLE001
+            row["error"] = str(exc)
+        out.append(row)
+    return out
+
+
+def full_bundle(metric: str, start: str, end: str) -> dict:
+    """Build one bundle and return it as schema-shaped JSON (for the click-to-view drawer)."""
+    window = Window(start=datetime.fromisoformat(start), end=datetime.fromisoformat(end))
+    return build_bundle(metric, window).model_dump(mode="json", by_alias=True, exclude_none=True)
+
+
+def start_engine_job() -> dict:
+    job_id = uuid4().hex[:8]
+    _JOBS[job_id] = {"status": "running", "log": "", "finished": False, "result": None}
+    threading.Thread(target=_run_engine_job, args=(job_id,), daemon=True).start()
+    return {"job_id": job_id}
+
+
+def _run_engine_job(job_id: str) -> None:
+    try:
+        rows = run_engine_benchmark()
+        _JOBS[job_id].update(status="done", finished=True, result={"rows": rows}, log=f"{len(rows)} bundles")
+    except Exception as exc:  # noqa: BLE001
+        _JOBS[job_id].update(status="error", finished=True, log=str(exc))
+
+
 def start_discover_job(start: str, end: str, grain: str, scope: str, min_effect: float) -> dict:
     """A full segment sweep is ~50 queries (a metric x dimension pass each), so run it in the
     background like /mega rather than holding the request open."""
@@ -485,3 +533,19 @@ class MegaReq(BaseModel):
 @router.post("/mega")
 def mega_endpoint(req: MegaReq) -> dict:
     return start_mega_job(req.hours_per_case)  # background job; poll /dev/jobs/{id} for result
+
+
+@router.post("/engine")
+def engine_endpoint() -> dict:
+    return start_engine_job()  # background job; poll /dev/jobs/{id} for result
+
+
+class BundleReq(BaseModel):
+    metric: str = "revenue"
+    start: str = "2026-06-21"
+    end: str = "2026-06-22"
+
+
+@router.post("/bundle")
+def bundle_endpoint(req: BundleReq) -> dict:
+    return _guard(full_bundle, req.metric, req.start, req.end)

@@ -120,6 +120,10 @@
       <button class="act" onclick="runMega()">Run mega comparison</button>
       <button class="act" onclick="exportCSV('mega-result','mega_comparison.csv')">Export CSV</button></h2>
     <div id="mega-result" class="muted">Runs every detector variant (robust_z, seasonal_ml, IsolationForest uni/multi) at several hours per case and summarizes detection rate + localization. Runs in the background (~30–60s).</div>
+
+    <h2>Full engine <span class="muted">(build_bundle per case → the real end-to-end EvidenceBundle)</span>
+      <button class="act" onclick="runEngine()">Run full engine</button></h2>
+    <div id="engine-result" class="muted">Runs the WHOLE pipeline (scan → decompose → drill → ruled-out) for each case and shows detection, primary factor, localized segment, ruled-out hypotheses, and query count. Background job.</div>
   </section>
 
   <!-- HELP -->
@@ -371,6 +375,34 @@ function renderMega(j){
       <td class="mono">${esc(seg(r.localized))}</td><td>${r.hit?'<span class="pill yes">PASS</span>':'<span class="pill no">FAIL</span>'}</td></tr>`).join('')}</tbody></table>`;
   $('#mega-result').innerHTML = `<div class="muted" style="margin:8px 0">Detection = fraction of ${res.hours_per_case} sampled hours/case that each method flagged, <b>segment-aware</b> (global pass first; if nothing fires, scan per dimension). Global-only scoring is blind to a localised anomaly by construction — the APAC×iOS 18.1 drop is −51% in-segment but −1.2% globally — which capped every method at 3/5 cases before. Localization is deterministic — identical across methods.</div>
     <b>Leaderboard</b>${board}<div style="margin-top:14px"><b>Per case × method</b>${detail}</div>`;
+}
+async function runEngine(){
+  $('#engine-result').innerHTML = '<span class="muted">Running the full engine (build_bundle) per case…</span>';
+  const {job_id} = await post('/engine', {});
+  const poll = setInterval(async ()=>{
+    const j = await api('/jobs/'+job_id);
+    if(j.finished){ clearInterval(poll); renderEngine(j); }
+  }, 2500);
+}
+function renderEngine(j){
+  if(j.status!=='done' || !j.result){ $('#engine-result').innerHTML = '<span class="pill no">error</span> '+esc(j.log||''); return; }
+  const rows = j.result.rows;
+  const passed = rows.filter(r=>r.hit).length;
+  $('#engine-result').innerHTML = `<div class="muted" style="margin:8px 0">One EvidenceBundle per case — the real pipeline output. <b>${passed}/${rows.length}</b> localized correctly. <span class="muted">Click a row to view its full bundle JSON.</span></div>
+    <table><thead><tr><th>Case</th><th>Metric</th><th>Detected</th><th class="num">Score</th><th>Primary factor</th><th>Localized</th><th>Ruled out</th><th class="num">Queries</th><th>Result</th></tr></thead><tbody>${
+    rows.map(r=>`<tr style="cursor:pointer" onclick="viewBundle('${esc(r.metric)}','${esc(r.start)}','${esc(r.end)}','${esc(r.id)}')"><td>${esc(r.id)}</td><td>${esc(r.metric)}</td>
+    <td>${r.error?'<span class="pill no">err</span>':(r.detected?'<span class="pill yes">yes</span>':'<span class="pill no">no</span>')}</td>
+    <td class="num">${r.score??''}</td><td class="mono">${esc(r.primary_factor||'')}</td>
+    <td class="mono">${esc(r.error?r.error:seg(r.localized))}</td>
+    <td class="muted">${esc((r.ruled_out||[]).join(', ')||'—')}</td>
+    <td class="num">${r.n_queries??''}</td>
+    <td>${r.error?'':(r.hit?'<span class="pill yes">PASS</span>':'<span class="pill no">FAIL</span>')}</td></tr>`).join('')}</tbody></table>
+    <div id="engine-bundle"></div>`;
+}
+async function viewBundle(metric, start, end, id){
+  $('#engine-bundle').innerHTML = `<div class="card muted">Building bundle for case ${esc(id)} (${esc(metric)})…</div>`;
+  const b = await post('/bundle', {metric, start, end});
+  $('#engine-bundle').innerHTML = `<div class="card"><b>Case ${esc(id)} — full EvidenceBundle</b><pre>${esc(JSON.stringify(b,null,2))}</pre></div>`;
 }
 async function runBench(){
   $('#bench-result').textContent='Running…';
