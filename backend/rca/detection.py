@@ -30,6 +30,12 @@ def _select(method: str) -> Runner:
         raise ValueError(f"unknown detection method: {method!r} (known: {sorted(_DETECTORS)})")
 
 
-def detect(metric: str, target: Window) -> tuple[Anomaly, list[dict]]:
-    """Return (Anomaly, queries) for `metric` at `target`, via the configured detector."""
-    return _select(config()["detection"]["method"])(metric, target)
+def detect(
+    metric: str, target: Window, method: str | None = None
+) -> tuple[Anomaly, list[dict]]:
+    """Return (Anomaly, queries) for `metric` at `target`.
+
+    `method` overrides config.detection.method for this one call (used by the chat endpoint to
+    let a caller pick statistical vs ML per request); falls back to the configured default.
+    """
+    return _select(method or config()["detection"]["method"])(metric, target)
