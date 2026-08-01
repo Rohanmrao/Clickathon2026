@@ -100,6 +100,21 @@ def test_benchmark_cases_returns_the_four_ground_truth_cases():
     assert {c["id"] for c in cases} == {"A", "B", "C", "D"}
 
 
+def test_run_benchmark_forwards_method_and_overrides():
+    seen = []
+
+    def fake_run_detect(metric, at, method=None, overrides=None):
+        seen.append((metric, method, overrides))
+        return {"method": method or "robust_z", "anomaly": {"detected": True, "score": 1.0}, "queries": []}
+
+    with patch.object(dev, "run_detect", fake_run_detect):
+        rows = dev.run_benchmark(method="seasonal_ml", overrides={"min_pct_delta": 0.2})
+    assert len(seen) == 4                                       # all four cases run
+    assert all(m == "seasonal_ml" for _, m, _ in seen)         # chosen method forwarded
+    assert all(o == {"min_pct_delta": 0.2} for *_, o in seen)  # overrides forwarded
+    assert all(r["method"] == "seasonal_ml" for r in rows)     # and reported back per row
+
+
 def test_dev_enabled_default_on_and_off(monkeypatch):
     monkeypatch.delenv("ENABLE_DEV_DASHBOARD", raising=False)
     assert dev.dev_enabled() is True
