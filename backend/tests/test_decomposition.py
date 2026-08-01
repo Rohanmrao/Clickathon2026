@@ -22,10 +22,21 @@ def test_requests_drop_makes_requests_primary():
     assert fd.primary_factor == "requests"
 
 
-def test_offsetting_factors_still_sum_to_one():
-    # requests up, fill_rate down (traffic masks the collapse) — contributions offset but sum to 1
+def test_offsetting_factors_stay_bounded():
+    # requests up +4%, fill_rate down (traffic masks the collapse) -> revenue ~flat. Share-of-net
+    # would explode (>1000%); the guard must report share-of-gross instead, so |pct| stays <= 1.
     exp = {"requests": 778_000, "fills": 610_800, "impressions": 598_000, "revenue": 1481.0}
     obs = {"requests": 809_000, "fills": 627_700, "impressions": 614_800, "revenue": 1532.0}
     fd = dc.decompose_from_sums(obs, exp)
-    assert abs(sum(f.contribution_pct for f in fd.factors) - 1.0) < 0.02
-    assert any(f.contribution_pct < 0 for f in fd.factors)  # fill_rate is a negative contributor
+    assert all(abs(f.contribution_pct) <= 1.01 for f in fd.factors)   # no >100% blow-up
+    assert any(f.contribution_pct < 0 for f in fd.factors)            # fill_rate is a negative contributor
+    assert fd.primary_factor == "requests"
+
+
+def test_near_zero_revenue_delta_does_not_explode():
+    # requests +4.4% vs fill_rate -4.4% -> revenue essentially flat -> contributions must not blow up
+    exp = {"requests": 1000, "fills": 785, "impressions": 785, "revenue": 1.97035}
+    obs = {"requests": 1044, "fills": 784, "impressions": 784, "revenue": 1.96784}
+    fd = dc.decompose_from_sums(obs, exp)
+    assert all(abs(f.contribution_pct) <= 1.01 for f in fd.factors)   # not thousands of percent
+    assert fd.primary_factor == "fill_rate"
