@@ -1,0 +1,6 @@
+[
+  {"id": "A", "metric": "fill_rate", "window": "2026-06-23..25", "expect_segment": {"os_version": "Android 15"}},
+  {"id": "B", "metric": "ecpm",      "window": "2026-06-19..22", "expect_segment": {"category": "finance"}},
+  {"id": "C", "metric": "requests",  "window": "2026-06-21",     "expect_segment": null},
+  {"id": "D", "metric": "fill_rate", "window": "2026-06-28..30", "expect_segment": {"region": "APAC", "os_version": "iOS 18.1"}}
+]

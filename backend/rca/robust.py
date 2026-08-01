@@ -1,9 +1,11 @@
-"""Robust statistics primitives for like-for-like baselines. Pure, dependency-free, unit-tested."""
+"""Robust statistics primitives for like-for-like baselines. Pure, dependency-free, unit-tested.
+
+`scale` (the MAD->std-dev factor, ~1.4826 for normal data) is passed in by the caller, sourced from
+config.detection.mad_scale — no constants live here, so these stay pure and config-agnostic.
+"""
 from __future__ import annotations
 
 from statistics import median
-
-_MAD_SCALE = 1.4826  # scales MAD to be comparable to std-dev on normally distributed data
 
 
 def med(values: list[float]) -> float:
@@ -18,9 +20,9 @@ def mad(values: list[float], center: float | None = None) -> float:
     return float(median([abs(v - c) for v in values]))
 
 
-def robust_z(value: float, center: float, mad_value: float) -> float:
+def robust_z(value: float, center: float, mad_value: float, scale: float) -> float:
     """MAD-based z-score. Returns 0.0 on degenerate spread — caller applies a pct fallback."""
-    denom = mad_value * _MAD_SCALE
+    denom = mad_value * scale
     return (value - center) / denom if denom else 0.0
 
 

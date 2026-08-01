@@ -23,6 +23,7 @@ from pydantic import BaseModel
 from api import chat as chatlib
 from api import pipeline
 from config import LANGFUSE
+from api import dev
 from data import store
 from models import EvidenceBundle, Window
 
@@ -30,6 +31,10 @@ app = FastAPI(title="Automated Root-Cause Analyst")
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
 )
+
+# Dev/admin dashboard at /dev — local only, gated by env (default on). Never enable on a public deploy.
+if dev.dev_enabled():
+    app.include_router(dev.router)
 
 
 class InvestigateRequest(BaseModel):
