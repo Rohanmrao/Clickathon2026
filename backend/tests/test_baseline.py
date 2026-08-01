@@ -27,8 +27,8 @@ def test_observed_and_baseline_sql_shape():
     obs_dim = b._observed_sql("sum(revenue)", "", "country")
     assert "country AS seg" in obs_dim and "GROUP BY country" in obs_dim
     base = b._baseline_sql("sum(revenue)", "")
-    assert "toDayOfWeek(hour) = toDayOfWeek({target:DateTime})" in base
-    assert "toHour(hour) = toHour({target:DateTime})" in base
+    assert "toDayOfWeek(hour) = toDayOfWeek(toDateTime({target:String}))" in base
+    assert "toHour(hour) = toHour(toDateTime({target:String}))" in base
     assert base.rstrip().endswith("GROUP BY hour")
 
 

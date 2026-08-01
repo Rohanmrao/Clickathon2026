@@ -50,6 +50,11 @@ def _baseline_start(target_hour: datetime) -> datetime:
     return target_hour - timedelta(weeks=_DET["baseline_weeks"])
 
 
+def _fmt(dt: datetime) -> str:
+    # Bind hours as strings + cast with toDateTime() — datetime DateTime params don't match exactly.
+    return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
 def _detected(z: float, mad_value: float, pct: float) -> bool:
     if mad_value > 0:
         return abs(z) >= _DET["mad_z_threshold"]
@@ -71,8 +76,8 @@ def _where(segment: dict | None) -> tuple[str, dict]:
 
 def _observed_sql(expr: str, where_sql: str, dim: str | None = None) -> str:
     if dim:
-        return f"SELECT {dim} AS seg, {expr} AS value FROM {_HOURLY} WHERE hour = {{target:DateTime}}{where_sql} GROUP BY {dim}"
-    return f"SELECT {expr} AS value FROM {_HOURLY} WHERE hour = {{target:DateTime}}{where_sql}"
+        return f"SELECT {dim} AS seg, {expr} AS value FROM {_HOURLY} WHERE hour = toDateTime({{target:String}}){where_sql} GROUP BY {dim}"
+    return f"SELECT {expr} AS value FROM {_HOURLY} WHERE hour = toDateTime({{target:String}}){where_sql}"
 
 
 def _baseline_sql(expr: str, where_sql: str, dim: str | None = None) -> str:
@@ -80,9 +85,9 @@ def _baseline_sql(expr: str, where_sql: str, dim: str | None = None) -> str:
     grp = f"{dim}, hour" if dim else "hour"
     return (
         f"SELECT {head}{expr} AS value FROM {_HOURLY} "
-        f"WHERE toDayOfWeek(hour) = toDayOfWeek({{target:DateTime}}) "
-        f"AND toHour(hour) = toHour({{target:DateTime}}) "
-        f"AND hour < {{target:DateTime}} AND hour >= {{start:DateTime}}{where_sql} "
+        f"WHERE toDayOfWeek(hour) = toDayOfWeek(toDateTime({{target:String}})) "
+        f"AND toHour(hour) = toHour(toDateTime({{target:String}})) "
+        f"AND hour < toDateTime({{target:String}}) AND hour >= toDateTime({{start:String}}){where_sql} "
         f"GROUP BY {grp}"
     )
 
@@ -107,11 +112,11 @@ def score(metric: str, target_hour: datetime, segment: dict | None = None) -> Re
     where_sql, params = _where(segment)
     queries: list[dict] = []
 
-    obs = run_query(_observed_sql(expr, where_sql), {"target": target_hour, **params})
+    obs = run_query(_observed_sql(expr, where_sql), {"target": _fmt(target_hour), **params})
     observed = float(obs["rows"][0][0]) if obs["rows"] and obs["rows"][0][0] is not None else 0.0
     queries.append({"id": "q_observed", "sql": obs["resolved_sql"], "result_summary": {"observed": observed}})
 
-    base = run_query(_baseline_sql(expr, where_sql), {"target": target_hour, "start": _baseline_start(target_hour), **params})
+    base = run_query(_baseline_sql(expr, where_sql), {"target": _fmt(target_hour), "start": _fmt(_baseline_start(target_hour)), **params})
     series = [float(r[0]) for r in base["rows"] if r[0] is not None]
     queries.append({"id": "q_baseline", "sql": base["resolved_sql"], "result_summary": {"n": len(series), "values": series}})
 
@@ -129,11 +134,11 @@ def scan(metric: str, target_hour: datetime, dimension: str, segment: dict | Non
     where_sql, params = _where(segment)
     queries: list[dict] = []
 
-    obs = run_query(_observed_sql(expr, where_sql, dimension), {"target": target_hour, **params})
+    obs = run_query(_observed_sql(expr, where_sql, dimension), {"target": _fmt(target_hour), **params})
     observed = {r[0]: float(r[1]) for r in obs["rows"] if r[1] is not None}
     queries.append({"id": "q_observed_by_dim", "sql": obs["resolved_sql"], "result_summary": {"n": len(observed)}})
 
-    base = run_query(_baseline_sql(expr, where_sql, dimension), {"target": target_hour, "start": _baseline_start(target_hour), **params})
+    base = run_query(_baseline_sql(expr, where_sql, dimension), {"target": _fmt(target_hour), "start": _fmt(_baseline_start(target_hour)), **params})
     series_by: dict = {}
     for r in base["rows"]:
         if r[1] is not None:
