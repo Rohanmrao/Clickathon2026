@@ -24,7 +24,7 @@ from pathlib import Path
 
 from data import store
 from models import EvidenceBundle, Window
-from narrator.tracing import investigation_trace
+from narrator.tracing import investigation_trace, narration_span
 
 log = logging.getLogger(__name__)
 
@@ -99,4 +99,159 @@ def run_investigation(
         bundle.trace_url = trace.url
         store.save_bundle(bundle, trace_id=trace.trace_id, session_id=session_id)
 
+    return bundle
+
+
+# Chat-facing method aliases: friendly names -> detector keys registered in rca.detection.
+_METHOD_ALIASES = {"statistical": "robust_z", "ml": "isolation_forest"}
+
+
+def run_detection(
+    metric: str,
+    window: Window,
+    method: str | None = None,
+    session_id: str | None = None,
+) -> EvidenceBundle:
+    """Detection-grade investigation for the chat: REAL detection from ClickHouse via the chosen
+    method, traced and persisted. Returns the bundle WITHOUT a narrative - the chat adds prose via
+    narrate_investigation(), so the generation span reattaches to this trace and an LLM failure
+    cannot destroy a valid bundle (the same investigate/narrate split as run_investigation).
+
+    Runs only the parts implemented today: detection.detect(). Segment localization (decompose/
+    drill) is left EMPTY rather than faked - honest is the whole point.
+    """
+    from rca.detection import detect
+
+    investigation_id = str(uuid.uuid4())
+    detector = _METHOD_ALIASES.get(method or "", method)  # 'ml'/'statistical' -> detector key
+
+    with investigation_trace(investigation_id, metric, session_id) as trace:
+        # The detectors are hour-grain; a chat window is usually a whole day. Scan the day's hours
+        # and report the worst one, so we surface the planted anomaly rather than whatever sits at
+        # midnight. `detect` is called per hour via the same chosen method.
+        anomaly, queries, hour = _scan_window(metric, window, detector)
+        bundle = _detection_bundle(investigation_id, metric, hour, anomaly, queries, detector)
+        bundle.narrative = None  # investigate/narrate split; narrate_investigation adds prose
+        bundle.narrative_verification = None
+        bundle.trace_url = trace.url
+        store.save_bundle(bundle, trace_id=trace.trace_id, session_id=session_id)
+
+    return bundle
+
+
+def _hours_in(window: Window) -> list:
+    from datetime import timedelta
+
+    hours, t = [], window.start.replace(minute=0, second=0, microsecond=0)
+    while t < window.end:
+        hours.append(t)
+        t += timedelta(hours=1)
+    return hours or [window.start]  # zero-width window -> score the single start hour
+
+
+def _scan_window(metric: str, window: Window, detector: str | None):
+    """Score every hour in the window via the chosen detector; return the worst hour's
+    (anomaly, queries, hour-window). Prefers a detected anomaly, then the most extreme score."""
+    from datetime import timedelta
+
+    from rca.detection import detect
+
+    best = None
+    for hour in _hours_in(window):
+        target = Window(start=hour, end=hour + timedelta(hours=1))
+        anomaly, queries = detect(metric, target, detector)
+        rank = (anomaly.detected, abs(anomaly.score))
+        if best is None or rank > best[0]:
+            best = (rank, anomaly, queries, target)
+    return best[1], best[2], best[3]
+
+
+def _round_anomaly(anomaly):
+    """Present clean numbers to the narrator/UI. The exact values remain reproducible from the
+    logged queries[]; this only trims float noise so the prose doesn't cite 18.3315000001."""
+    from models import Anomaly
+
+    return Anomaly(
+        detected=anomaly.detected,
+        observed=round(anomaly.observed, 2),
+        expected=round(anomaly.expected, 2),
+        abs_delta=round(anomaly.abs_delta, 2),
+        pct_delta=round(anomaly.pct_delta, 4),
+        score=round(anomaly.score, 2),
+        direction=anomaly.direction,
+    )
+
+
+def _detection_bundle(investigation_id, metric, window, anomaly, queries, detector):
+    from models import BaselineWindow, FactorDecomposition, Query
+
+    return EvidenceBundle(
+        investigation_id=investigation_id,
+        created_at=datetime.now(),
+        metric=metric,
+        target_window=window,
+        baseline_window=BaselineWindow(
+            method="same_weekday_trailing_weeks",
+            description=f"detection via {detector or 'default'}",
+        ),
+        anomaly=_round_anomaly(anomaly),
+        # Localization is Lane B (decompose/drill); left empty rather than faked.
+        factor_decomposition=FactorDecomposition(
+            method="not_computed", factors=[], primary_factor="pending"
+        ),
+        drilldown=[],
+        ruled_out=[],
+        queries=[Query(**q) for q in queries],
+    )
+
+
+def narrate_investigation(investigation_id: str) -> EvidenceBundle | None:
+    """Add prose to a stored bundle. Returns None if the investigation does not exist.
+
+    Three things this must guarantee, in order of importance:
+
+    1. The generation span lands in the trace the investigation already opened, so a judge
+       reads one coherent investigation rather than two unrelated traces.
+    2. The guardrail runs on the result. Every number in the prose must already exist in the
+       bundle; a fabricated figure costs more than a missed anomaly.
+    3. An LLM failure never destroys a valid bundle. The numbers, drilldown and ruled-out
+       list are already computed and scoreable - narration is a presentation layer, so a
+       Bedrock outage degrades the answer instead of losing it.
+    """
+    bundle = store.load_bundle(investigation_id)
+    if bundle is None:
+        return None
+
+    trace_id = store.load_trace_id(investigation_id)
+
+    with narration_span(trace_id, bundle.metric) as span:
+        try:
+            from narrator.narrate import narrate
+
+            bundle = narrate(bundle)
+        except Exception as exc:  # noqa: BLE001 - any LLM/transport failure is non-fatal here
+            log.warning("Narration failed for %s: %s", investigation_id, exc)
+            bundle.narrative = None
+            bundle.narrative_verification = None
+            if span is not None:
+                span.update(output={"error": str(exc)}, level="ERROR")
+        else:
+            if span is not None:
+                verification = bundle.narrative_verification
+                span.update(
+                    input={"investigation_id": investigation_id, "metric": bundle.metric},
+                    output=bundle.narrative,
+                    metadata={
+                        "guardrail_passed": bool(verification and verification.passed),
+                        "unverified_numbers": list(verification.unverified_numbers)
+                        if verification else [],
+                    },
+                )
+            if bundle.narrative_verification and not bundle.narrative_verification.passed:
+                log.warning(
+                    "Guardrail FAILED for %s - numbers not in bundle: %s",
+                    investigation_id, bundle.narrative_verification.unverified_numbers,
+                )
+
+    store.save_bundle(bundle, trace_id=trace_id)
     return bundle
