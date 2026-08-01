@@ -51,6 +51,7 @@
   <button data-tab="tables" class="active">Tables &amp; Data</button>
   <button data-tab="runs">Runs</button>
   <button data-tab="bench">Benchmarker</button>
+  <button data-tab="help">Help</button>
 </nav>
 <main>
   <!-- TABLES -->
@@ -92,6 +93,75 @@
     <h2>Ground-truth harness <span class="muted">(detection only — localization pending JAL-77)</span>
       <button class="act" onclick="runBench()">Run benchmark</button></h2>
     <div id="bench-result" class="muted">Runs the 4 planted-anomaly cases through the current config.</div>
+  </section>
+
+  <!-- HELP -->
+  <section class="tab" id="tab-help">
+    <h2>What every button does</h2>
+    <table><thead><tr><th>Button</th><th>What it does</th></tr></thead><tbody>
+      <tr><td class="mono">Refresh</td><td>Reloads the table list and row counts.</td></tr>
+      <tr><td class="mono">Load all data…</td><td>Runs the full ETL (raw events → dim tables → <span class="mono">events_full</span> → <span class="mono">hourly_summary</span>). ~9M rows, takes minutes; runs in the background. Typed confirm: <span class="mono">LOAD</span>.</td></tr>
+      <tr><td class="mono">Preview</td><td>Shows the first 20 rows of a table (read-only).</td></tr>
+      <tr><td class="mono">Drop</td><td><b>Deletes</b> a table. Typed confirm: you must type the exact table name.</td></tr>
+      <tr><td class="mono">Run</td><td>Runs the detector once for your chosen metric + hour + method, applying any threshold overrides (in-memory only — <span class="mono">config.json</span> is never changed).</td></tr>
+      <tr><td class="mono">Compare both</td><td>Runs <span class="mono">robust_z</span> and <span class="mono">seasonal_ml</span> on the same input, side by side.</td></tr>
+      <tr><td class="mono">Run benchmark</td><td>Runs the 4 planted-anomaly cases (JAL-77) through the current config. Detection only for now; segment localization comes with the drill-down.</td></tr>
+    </tbody></table>
+
+    <h2>The metrics (all ratios are sum/sum over the group)</h2>
+    <table><thead><tr><th>Metric</th><th>Formula</th><th>Meaning</th></tr></thead><tbody>
+      <tr><td class="mono">revenue</td><td class="mono">sum(revenue)</td><td>Total ad revenue.</td></tr>
+      <tr><td class="mono">fill_rate</td><td class="mono">fills / requests</td><td>Share of ad requests that got an ad.</td></tr>
+      <tr><td class="mono">render_rate</td><td class="mono">impressions / fills</td><td>Share of filled ads that actually rendered.</td></tr>
+      <tr><td class="mono">ctr</td><td class="mono">clicks / impressions</td><td>Click-through rate.</td></tr>
+      <tr><td class="mono">ecpm</td><td class="mono">revenue / impressions × 1000</td><td>Revenue per 1,000 impressions.</td></tr>
+      <tr><td class="mono">rpr</td><td class="mono">revenue / requests</td><td>Revenue per ad request.</td></tr>
+    </tbody></table>
+
+    <h2>The two detectors</h2>
+    <div class="card"><b class="mono">robust_z</b> — deterministic, fully traceable (the default).<br>
+      Baseline = the <b>same weekday + hour-of-day over the trailing 3 weeks</b> (a "like-for-like"
+      comparison). It takes the <b>median</b> of those points as <i>expected</i>, measures spread with
+      <b>MAD</b>, and reports a <b>robust z-score</b>. Every number comes straight from a logged SQL query.</div>
+    <div class="card"><b class="mono">seasonal_ml</b> — unsupervised model. <b>No trained ML library, no saved weights.</b><br>
+      It builds a <b>seasonal profile</b>: the median of every <span class="mono">(weekday, hour-of-day)</span>
+      bucket across <b>all</b> history — that table of medians <i>is</i> the model, rebuilt each call
+      (pandas only). It then scores the target hour's <b>residual</b> (actual − seasonal) against the
+      spread of <b>all</b> residuals. Because it pools the whole history, its noise estimate is far more
+      stable than <span class="mono">robust_z</span>'s 3-point one — so it fires less on tiny moves.</div>
+
+    <h2>What you can tweak (the knobs)</h2>
+    <table><thead><tr><th>Knob</th><th>Applies to</th><th>Meaning</th></tr></thead><tbody>
+      <tr><td class="mono">method</td><td>both</td><td>Which detector to run: <span class="mono">robust_z</span> or <span class="mono">seasonal_ml</span>.</td></tr>
+      <tr><td class="mono">mad_z_threshold</td><td>robust_z</td><td>Flag when the |z-score| ≥ this. Higher = fewer alerts. Default 3.5.</td></tr>
+      <tr><td class="mono">residual_z_threshold</td><td>seasonal_ml</td><td>Same idea, on the residual z. Default 3.5.</td></tr>
+      <tr><td class="mono">min_pct_delta</td><td>both</td><td>Ignore moves smaller than this fraction (0.1 = 10%). A floor so trivial % changes never alert.</td></tr>
+      <tr><td class="mono">mad_scale</td><td>both</td><td>1.4826 — the constant that makes MAD comparable to a standard deviation. Rarely changed.</td></tr>
+      <tr><td class="mono">baseline_weeks</td><td>robust_z</td><td>How many trailing weeks form the baseline. Default 3.</td></tr>
+    </tbody></table>
+
+    <h2>Reading the result</h2>
+    <table><thead><tr><th>Field</th><th>Meaning</th></tr></thead><tbody>
+      <tr><td class="mono">detected</td><td>Did it flag this hour as anomalous?</td></tr>
+      <tr><td class="mono">observed</td><td>The actual metric value this hour.</td></tr>
+      <tr><td class="mono">expected</td><td>What the baseline/seasonal model expected.</td></tr>
+      <tr><td class="mono">abs_delta / pct_delta</td><td>observed − expected, absolute and as a %.</td></tr>
+      <tr><td class="mono">score</td><td>The robust z-score — "how many robust std-devs from normal."</td></tr>
+      <tr><td class="mono">direction</td><td><span class="mono">drop</span> (below expected) or <span class="mono">spike</span> (above).</td></tr>
+      <tr><td class="mono">queries</td><td>The IDs of the SQL queries behind every number — this is the traceability trail.</td></tr>
+    </tbody></table>
+
+    <h2>Buzzword decoder</h2>
+    <table><tbody>
+      <tr><td class="mono">median</td><td>The middle value — unlike an average, one huge outlier can't drag it around.</td></tr>
+      <tr><td class="mono">MAD</td><td>Median Absolute Deviation — a robust "how spread out is the data" measure (the median of the distances from the median).</td></tr>
+      <tr><td class="mono">robust z-score</td><td>(value − center) ÷ (MAD × scale). Like a normal z-score but built from median/MAD, so outliers don't distort it.</td></tr>
+      <tr><td class="mono">like-for-like baseline</td><td>Comparing an hour only to the same weekday + hour in prior weeks — apples to apples, so weekly/daily seasonality doesn't look like an anomaly.</td></tr>
+      <tr><td class="mono">seasonal profile</td><td>The "normal" value for each weekday×hour slot, learned from history.</td></tr>
+      <tr><td class="mono">residual</td><td>What's left after subtracting the expected/seasonal value — the part a model didn't predict.</td></tr>
+      <tr><td class="mono">unsupervised</td><td>Learns "normal" from the data itself with no labelled examples of anomalies.</td></tr>
+      <tr><td class="mono">traceability</td><td>Every number can be reproduced from a named SQL query — so a judge (or you) can verify it.</td></tr>
+    </tbody></table>
   </section>
 </main>
 <div id="toast"></div>
