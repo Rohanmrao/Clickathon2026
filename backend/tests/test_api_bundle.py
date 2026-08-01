@@ -1,0 +1,107 @@
+"""JAL-81: GET /bundle/{id} and GET /bundles, with the store stubbed out.
+
+The store itself is covered by test_store.py against a real round-trip; here we only
+pin the HTTP contract — status codes, shapes, and that a missing id is a clean 404
+rather than a 500.
+"""
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+
+from api.main import app
+from models import EvidenceBundle
+
+FIXTURE = Path(__file__).resolve().parents[2] / "fixtures" / "sample_bundle.json"
+
+
+@pytest.fixture
+def client() -> TestClient:
+    return TestClient(app)
+
+
+@pytest.fixture
+def bundle() -> EvidenceBundle:
+    return EvidenceBundle.model_validate_json(FIXTURE.read_text())
+
+
+def test_health(client):
+    assert client.get("/health").json() == {"ok": True}
+
+
+def test_get_bundle_returns_stored_bundle(client, bundle, monkeypatch):
+    monkeypatch.setattr("api.main.store.load_bundle", lambda _id: bundle)
+
+    res = client.get(f"/bundle/{bundle.investigation_id}")
+
+    assert res.status_code == 200
+    assert res.json()["investigation_id"] == bundle.investigation_id
+    assert res.json()["localized_segment"] == bundle.localized_segment
+
+
+def test_get_bundle_passes_the_id_through(client, bundle, monkeypatch):
+    seen = {}
+
+    def fake_load(investigation_id):
+        seen["id"] = investigation_id
+        return bundle
+
+    monkeypatch.setattr("api.main.store.load_bundle", fake_load)
+
+    client.get("/bundle/abc-123")
+
+    assert seen["id"] == "abc-123"
+
+
+def test_get_bundle_unknown_id_is_404_not_500(client, monkeypatch):
+    monkeypatch.setattr("api.main.store.load_bundle", lambda _id: None)
+
+    res = client.get("/bundle/does-not-exist")
+
+    assert res.status_code == 404
+    assert "does-not-exist" in res.json()["detail"]
+
+
+def test_get_bundle_preserves_queries_for_traceability(client, bundle, monkeypatch):
+    """Every number in a diagnosis must trace to queries[]; the transport must not drop it."""
+    monkeypatch.setattr("api.main.store.load_bundle", lambda _id: bundle)
+
+    payload = client.get(f"/bundle/{bundle.investigation_id}").json()
+
+    assert len(payload["queries"]) == len(bundle.queries)
+    assert payload["queries"][0]["sql"] == bundle.queries[0].sql
+    assert len(payload["ruled_out"]) == len(bundle.ruled_out)
+
+
+def test_list_bundles_counts_rows(client, monkeypatch):
+    rows = [{"investigation_id": "a", "metric": "revenue"},
+            {"investigation_id": "b", "metric": "fill_rate"}]
+    monkeypatch.setattr("api.main.store.list_investigations", lambda limit: rows)
+
+    payload = client.get("/bundles").json()
+
+    assert payload["count"] == 2
+    assert payload["investigations"] == rows
+
+
+def test_list_bundles_forwards_limit(client, monkeypatch):
+    seen = {}
+
+    def fake_list(limit):
+        seen["limit"] = limit
+        return []
+
+    monkeypatch.setattr("api.main.store.list_investigations", fake_list)
+
+    client.get("/bundles?limit=7")
+
+    assert seen["limit"] == 7
+
+
+def test_list_bundles_empty_is_not_an_error(client, monkeypatch):
+    monkeypatch.setattr("api.main.store.list_investigations", lambda limit: [])
+
+    res = client.get("/bundles")
+
+    assert res.status_code == 200
+    assert res.json() == {"count": 0, "investigations": []}
