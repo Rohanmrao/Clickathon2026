@@ -29,6 +29,24 @@ def get_client():
     )
 
 
+def clickhouse_available() -> bool:
+    """Cheap probe: does ClickHouse answer a trivial query?
+
+    Lets the API fail soft (serve fixtures / an 'offline' signal) instead of 500-ing when the
+    datastore is unreachable — the common case being CLICKHOUSE_HOST unset in a container, which
+    otherwise defaults to localhost:8443 and refuses. On failure the memoized client is dropped,
+    so a corrected .env reconnects on the next call without a process restart.
+    """
+    if not CLICKHOUSE["host"]:
+        return False
+    try:
+        get_client().command("SELECT 1")
+        return True
+    except Exception:  # noqa: BLE001 - any connection/auth failure means "treat as offline"
+        get_client.cache_clear()
+        return False
+
+
 def run_query(
     sql: str, params: dict[str, Any] | None = None, name: str = "clickhouse-query"
 ) -> dict[str, Any]:

@@ -8,6 +8,14 @@
       "cwd": "backend",
       "port": 8000,
       "url": "http://localhost:8000"
+    },
+    {
+      "name": "rca-frontend",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "cwd": "frontend",
+      "port": 5173,
+      "url": "http://localhost:5173"
     }
   ]
 }
