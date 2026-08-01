@@ -172,7 +172,7 @@ def score_buckets(
             continue
         centre = med(series)
         spread = mad(series, centre)
-        z = robust_z(observed, centre, spread)
+        z = robust_z(observed, centre, spread, _DET["mad_scale"])
         pct = pct_delta(observed, centre)
         scored.append(
             Bucket(
