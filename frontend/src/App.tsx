@@ -14,7 +14,18 @@ export default function App() {
   const [source, setSource] = useState<"fixture" | "live">("fixture");
   const [running, setRunning] = useState(false);
   const [step, setStep] = useState<number>(99); // drill-down reveal cursor
+  const [activePanel, setActivePanel] = useState<"both" | "diagnosis" | "factor">("both");
+  const [theme, setTheme] = useState<"dark" | "light">(
+    () => (localStorage.getItem("rca-theme") as "dark" | "light") || "dark"
+  );
   const timer = useRef<number | undefined>(undefined);
+
+  // Theme lives on <body> so page backgrounds (not just cards) follow variables-final.css.
+  useEffect(() => {
+    document.body.classList.remove("light-theme", "dark-theme");
+    document.body.classList.add(`${theme}-theme`);
+    localStorage.setItem("rca-theme", theme);
+  }, [theme]);
 
   const fd = bundle.factor_decomposition;
   const depth = bundle.drilldown.length + 1; // + root
@@ -47,7 +58,7 @@ export default function App() {
   const stepLabel = running ? `drilling ${Math.min(step + 1, depth)}/${depth}` : `depth ${depth} · localized`;
 
   return (
-    <div className="app dark-theme spacing-default effect-smooth">
+    <div className="app spacing-default effect-smooth">
       <header className="topbar">
         <div className="brand">
           <span className="brand-logo">rc</span>
@@ -59,6 +70,22 @@ export default function App() {
           </div>
         </div>
         <div className="topbar-actions">
+          <button
+            className="ghost-btn icon-btn"
+            onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
+            aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+          >
+            {theme === "dark" ? (
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="4" />
+                <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41" />
+              </svg>
+            ) : (
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+              </svg>
+            )}
+          </button>
           <span className="status-pill"><span className="live-dot" /> clickhouse · 41ms</span>
           {bundle.trace_url && (
             <a className="ghost-btn" href={bundle.trace_url} target="_blank" rel="noreferrer">Open trace</a>
@@ -77,9 +104,48 @@ export default function App() {
             confidence={bundle.anomaly.score ? Math.min(0.99, bundle.anomaly.score / 5) : undefined}
             running={running}
           />
-          <div className="split-row">
+          <div
+            className={`split-row active-${activePanel}`}
+            onClick={(e) => {
+              const card = (e.target as HTMLElement).closest(".card");
+              if (!card || !card.parentElement) return;
+              const cards = [...card.parentElement.querySelectorAll(".card")];
+              const which = cards[0] === card ? "diagnosis" : "factor";
+              setActivePanel((prev) => (prev === which ? "both" : which));
+            }}
+          >
             <DiagnosisCard narrative={bundle.narrative} />
             <FactorSplit factors={fd.factors} primary={fd.primary_factor} totalPct={pctLabel} />
+            <div className="split-nav" onClick={(e) => e.stopPropagation()}>
+              <button
+                className={`split-arrow ${activePanel === "factor" ? "is-active" : ""}`}
+                aria-label="Expand factor split"
+                onClick={() => setActivePanel("factor")}
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="15 18 9 12 15 6" />
+                </svg>
+              </button>
+              <button
+                className={`split-mid ${activePanel === "both" ? "is-active" : ""}`}
+                aria-label="Reset to equal"
+                onClick={() => setActivePanel("both")}
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="4" y="6" width="6" height="12" rx="1.5" />
+                  <rect x="14" y="6" width="6" height="12" rx="1.5" />
+                </svg>
+              </button>
+              <button
+                className={`split-arrow ${activePanel === "diagnosis" ? "is-active" : ""}`}
+                aria-label="Expand diagnosis"
+                onClick={() => setActivePanel("diagnosis")}
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="9 18 15 12 9 6" />
+                </svg>
+              </button>
+            </div>
           </div>
           <RuledOutPanel items={bundle.ruled_out} />
         </section>

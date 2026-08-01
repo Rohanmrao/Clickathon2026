@@ -13,29 +13,19 @@ const CloseIcon = (
   </svg>
 );
 
-// Compact launcher: the "Ask a follow-up" header with a chat icon that opens
-// LibreChat (the RCA conversational interface) in a popover. Keeping it small
-// lets the metric tree expand to fill the sidebar. URL: VITE_LIBRECHAT_URL.
+// "Ask a follow-up" is a full-width button; clicking it animates open a LibreChat
+// panel anchored to — and the same width as — the button. URL: VITE_LIBRECHAT_URL.
 export function FollowUpChat() {
   const [open, setOpen] = useState(false);
   const [mounted, setMounted] = useState(false); // lazy-load LibreChat on first open
 
-  const openChat = () => {
+  const toggle = () => {
     setMounted(true);
-    setOpen(true);
+    setOpen((o) => !o);
   };
 
   return (
-    <>
-      <section className="card followup">
-        <div className="eyebrow-row">
-          <span className="eyebrow">Ask a follow-up</span>
-          <button className="chat-icon-btn" onClick={openChat} aria-label="Open RCA assistant" aria-expanded={open}>
-            {ChatIcon}
-          </button>
-        </div>
-      </section>
-
+    <div className="followup-wrap">
       <div className={`assistant-pop ${open ? "open" : ""}`} role="dialog" aria-label="RCA Assistant" aria-hidden={!open}>
         <div className="assistant-pop-head">
           <div className="ap-title">
@@ -51,6 +41,11 @@ export function FollowUpChat() {
           {mounted && <iframe className="assistant-frame" src={LIBRECHAT_URL} title="RCA Assistant" allow="clipboard-write" />}
         </div>
       </div>
-    </>
+
+      <button className={`followup-btn ${open ? "is-open" : ""}`} onClick={toggle} aria-expanded={open}>
+        <span className="fb-icon">{ChatIcon}</span>
+        <span>Ask a follow-up</span>
+      </button>
+    </div>
   );
 }
