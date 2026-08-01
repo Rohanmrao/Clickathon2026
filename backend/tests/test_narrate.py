@@ -184,6 +184,45 @@ def test_endpoint_404s_on_unknown_id(wired, monkeypatch):
     assert "does-not-exist" in res.json()["detail"]
 
 
+def test_chat_replies_contain_prose_not_a_placeholder(monkeypatch, bundle):
+    """Regression: /investigate correctly strips the narrative, so the chat path has to
+    narrate explicitly. Without that, every conversational reply was a placeholder."""
+    narrated = bundle.model_copy(deep=True)
+    narrated.narrative = "Fill rate collapsed on Android 15."
+
+    monkeypatch.setattr("api.main.pipeline.run_investigation",
+                        lambda *a, **kw: bundle)
+    monkeypatch.setattr("api.main.pipeline.narrate_investigation",
+                        lambda _id: narrated)
+    monkeypatch.setattr("api.main.store.upsert_session", lambda *a, **kw: None)
+    monkeypatch.setattr("api.main.store.add_turn", lambda *a, **kw: None)
+
+    res = TestClient(app).post("/v1/chat/completions", json={
+        "model": "rca-analyst",
+        "messages": [{"role": "user", "content": "why did revenue drop on june 23?"}]})
+
+    content = res.json()["choices"][0]["message"]["content"]
+    assert content.startswith("Fill rate collapsed on Android 15.")
+    assert "no narrative generated" not in content
+
+
+def test_chat_degrades_readably_when_narration_fails(monkeypatch, bundle):
+    """An LLM outage should not make the reply look like a broken system."""
+    bundle.narrative = None
+    monkeypatch.setattr("api.main.pipeline.run_investigation", lambda *a, **kw: bundle)
+    monkeypatch.setattr("api.main.pipeline.narrate_investigation", lambda _id: bundle)
+    monkeypatch.setattr("api.main.store.upsert_session", lambda *a, **kw: None)
+    monkeypatch.setattr("api.main.store.add_turn", lambda *a, **kw: None)
+
+    res = TestClient(app).post("/v1/chat/completions", json={
+        "model": "rca-analyst",
+        "messages": [{"role": "user", "content": "why did revenue drop on june 23?"}]})
+
+    content = res.json()["choices"][0]["message"]["content"]
+    assert "Narration unavailable" in content
+    assert "Localized to:" in content       # the real evidence still ships
+
+
 def test_endpoint_returns_200_when_the_llm_fails(wired, monkeypatch):
     """A Bedrock outage must not read as a broken investigation."""
     import narrator.narrate as narrate_module
