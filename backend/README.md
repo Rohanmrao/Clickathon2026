@@ -38,21 +38,14 @@ pytest -q                            # all tests
 pytest tests/test_baseline.py -v     # just the baseline engine, verbose
 ```
 
-## Build / rebuild the advanced rollup
-`metrics_hourly_advanced` is the hourly table the RCA engine reads (`config.clickhouse.hourly_table`).
-It stores raw sums **and** zero-safe ratio columns (`fill_rate/render_rate/ctr/ecpm/rpr`; a 0
-denominator gives 0, never NULL). Table names come from `config`, ratio formulas from the shared
-`metrics` lib — one definition, idempotent (drops then recreates):
+## Load the data / build the tables
+Lane A loads the four source files and builds the derived tables. `hourly_summary` is the hourly
+rollup the RCA engine reads (`config.clickhouse.hourly_table`) — it stores raw sums, and ratios are
+computed at read time (sum/sum) by the shared `metrics` lib:
 ```bash
-python -m data.build_advanced        # rebuild from config.clickhouse.enriched_table (events_full)
+python -m data.load                  # ad_events + *_dim -> events_full -> hourly_summary, then sanity-checks
 ```
-Preview the generated SQL without running it:
-```bash
-python -c "from data.build_advanced import build_sql; print(build_sql())"
-```
-> Requires the enriched table (`events_full`) to already exist. Full raw load (parquet + CSVs ->
-> `ad_events`, `*_dim`, `events_full`) is Lane A in [`data/load.py`](data/load.py) (still a stub) —
-> the DDL is in [`data/schema.sql`](data/schema.sql).
+> DDL lives in [`data/schema.sql`](data/schema.sql); the loader is [`data/load.py`](data/load.py).
 
 ## Run a baseline query (live, against ClickHouse)
 `score()` = one metric on one segment; `scan()` = every value of a dimension, ranked by |robust_z|:
@@ -79,7 +72,7 @@ python -c "from data.client import run_query; print([r[0] for r in run_query('SH
 - `config.py` / `config.json` — all thresholds, dimensions, table names. No magic strings in code.
 - `metrics.py` — the ONE place metric formulas live (SQL builders + Python compute).
 - `models.py` — pydantic mirror of `contracts/evidence_bundle.schema.json`.
-- `data/` — Lane A: `schema.sql`, `load.py`, `build_advanced.py`, `client.run_query`, `metrics.sql`.
+- `data/` — Lane A: `schema.sql`, `load.py`, `client.run_query`, `metrics.sql`.
 - `rca/` — Lane B: `baseline.py`, `detection.py`, `decomposition.py`, `drilldown.py`, `bundle.py`.
 - `narrator/` — Lane C: `narrate.py`, `guardrail.py`, `tracing.py`.
 - `api/` — Lane C: `main.py`.
@@ -89,4 +82,4 @@ Stubs raise `NotImplementedError` and point to the owning lane's prompt in `prom
 ## Live table names
 The live ClickHouse and this repo agree on these names (config-driven):
 `ad_events`, `apps_dim`, `advertisers_dim`, `geo_device_dim`, `events_full` (enriched),
-`metrics_hourly_advanced` (rollup).
+`hourly_summary` (rollup).

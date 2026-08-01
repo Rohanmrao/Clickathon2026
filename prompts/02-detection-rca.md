@@ -12,7 +12,7 @@ You are the **analytics engineer** owning the heart of the system: detecting whe
 ## The core idea
 > **ClickHouse does all the math. You never let an LLM compute anything.** Your engine outputs numbers + the SQL that produced them.
 
-You work on top of Lane A's `events_enriched`, hourly rollup, `run_query()` helper, and baseline template.
+You work on top of Lane A's `events_full`, hourly rollup, `run_query()` helper, and baseline template.
 
 ## The algorithm you implement
 
