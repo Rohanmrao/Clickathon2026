@@ -6,7 +6,8 @@ import { DiagnosisCard } from "./components/DiagnosisCard";
 import { FactorSplit } from "./components/FactorSplit";
 import { MetricTree } from "./components/MetricTree";
 import { RuledOutPanel } from "./components/RuledOutPanel";
-import { FollowUpChat } from "./components/FollowUpChat";
+import { SidebarDock } from "./components/SidebarDock";
+import { ClickathonMark } from "./components/ClickathonMark";
 import type { EvidenceBundle, InvestigationRow } from "./types";
 
 const METRICS = ["revenue", "fill_rate", "ecpm", "requests", "ctr", "rpr", "render_rate"];
@@ -112,7 +113,7 @@ export default function App() {
     <div className="app spacing-default effect-smooth">
       <header className="topbar">
         <div className="brand">
-          <span className="brand-logo">rc</span>
+          <span className="brand-logo"><ClickathonMark /></span>
           <div className="brand-titles">
             <span className="brand-name">RCA analyst</span>
             <span className="brand-sub">
@@ -236,27 +237,7 @@ export default function App() {
             )}
           </section>
 
-          <section className="card">
-            <div className="eyebrow-row">
-              <span className="eyebrow">Past investigations</span>
-              <button className="chat-icon-btn" onClick={refreshHistory} aria-label="Refresh history">↻</button>
-            </div>
-            {history.length === 0 ? (
-              <div className="history-empty">No stored investigations yet — run one.</div>
-            ) : (
-              <div className="history-list">
-                {history.map((row) => (
-                  <div key={row.investigation_id} className="history-row" onClick={() => openRun(row.investigation_id)}>
-                    <span className="hr-metric">{row.metric}</span>
-                    <span className={row.detected ? "culprit-badge" : "dim"}>{row.detected ? "detected" : "flat"}</span>
-                    <span className="hr-seg">{segOf(row)}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </section>
-
-          <FollowUpChat />
+          <SidebarDock history={history} onOpenRun={openRun} onRefresh={refreshHistory} segOf={segOf} />
         </aside>
       </main>
     </div>
