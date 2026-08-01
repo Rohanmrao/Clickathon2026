@@ -93,12 +93,32 @@
     </div>
     <div id="pg-result"></div>
 
+    <h2>Discover — find anomalies in any window <span class="muted">(no case list; sweeps the data itself)</span></h2>
+    <div class="row">
+      <label>From<input id="dsc-start" value="2026-06-01" /></label>
+      <label>To<input id="dsc-end" value="2026-07-06" /></label>
+      <label>Grain<select id="dsc-grain"><option>day</option><option>hour</option></select></label>
+      <label>Scope<select id="dsc-scope">
+        <option value="both">both</option><option value="global">global only</option>
+        <option value="segment">per-segment only</option></select></label>
+      <label>min_effect<input class="sm" id="dsc-eff" value="0.02" /></label>
+      <button class="act" onclick="runDiscover()">Find anomalies</button>
+      <button class="act" onclick="exportCSV('dsc-result','anomalies.csv')">Export CSV</button>
+    </div>
+    <div id="dsc-result" class="muted">Sweeps every metric (and, in segment scope, every value of every
+      low-cardinality dimension) across the window, merges adjacent flagged buckets into incidents, ranks
+      them by severity × volume, then drill-downs the top ones to name the responsible segment.
+      <b>Segment scope matters:</b> an anomaly can be severe inside a segment yet move the global figure
+      only ~1% — global-only sweeps miss those entirely. Runs in the background (~15–60s).</div>
+
     <h2>Ground-truth harness <span class="muted">(detection = chosen method · localization = drill-down)</span>
-      <button class="act" onclick="runBench()">Run benchmark</button></h2>
-    <div id="bench-result" class="muted">Runs the 4 planted-anomaly cases through the current config.</div>
+      <button class="act" onclick="runBench()">Run benchmark</button>
+      <button class="act" onclick="exportCSV('bench-result','benchmark.csv')">Export CSV</button></h2>
+    <div id="bench-result" class="muted">Runs the planted-anomaly cases through the current config.</div>
 
     <h2>Mega comparison <span class="muted">(all methods × 4 cases × several hours → detailed analysis)</span>
-      <button class="act" onclick="runMega()">Run mega comparison</button></h2>
+      <button class="act" onclick="runMega()">Run mega comparison</button>
+      <button class="act" onclick="exportCSV('mega-result','mega_comparison.csv')">Export CSV</button></h2>
     <div id="mega-result" class="muted">Runs every detector variant (robust_z, seasonal_ml, IsolationForest uni/multi) at several hours per case and summarizes detection rate + localization. Runs in the background (~30–60s).</div>
   </section>
 
@@ -281,6 +301,55 @@ async function doCompare(){
   const {results} = await post('/compare', {metric:$('#pg-metric').value, at:$('#pg-at').value});
   $('#pg-result').innerHTML = results.map(anomalyCard).join('');
 }
+function exportCSV(containerId, filename){
+  const tables = document.querySelectorAll('#'+containerId+' table');
+  if(!tables.length){ alert('Nothing to export yet — run it first.'); return; }
+  const cell = c => { const t=(c.innerText||'').trim().replace(/"/g,'""');
+                      return /[",\n]/.test(t) ? '"'+t+'"' : t; };
+  const csv = [...tables].map(tb =>
+    [...tb.querySelectorAll('tr')].map(tr =>
+      [...tr.querySelectorAll('th,td')].map(cell).join(',')).join('\n')
+  ).join('\n\n');   // blank line between tables (e.g. mega's leaderboard + detail)
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([csv], {type:'text/csv;charset=utf-8;'}));
+  a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+}
+async function runDiscover(){
+  $('#dsc-result').innerHTML = '<span class="muted">Sweeping… this runs a query per metric (× per dimension in segment scope). ~15–60s.</span>';
+  const {job_id} = await post('/discover', {
+    start:$('#dsc-start').value, end:$('#dsc-end').value, grain:$('#dsc-grain').value,
+    scope:$('#dsc-scope').value, min_effect:parseFloat($('#dsc-eff').value)||0.02});
+  const poll = setInterval(async ()=>{
+    const j = await api('/jobs/'+job_id);
+    if(j.finished){ clearInterval(poll); renderDiscover(j); }
+  }, 2500);
+}
+function renderDiscover(j){
+  if(j.status!=='done' || !j.result){ $('#dsc-result').innerHTML = '<span class="pill no">error</span> '+esc(j.log||''); return; }
+  const res = j.result;
+  if(!res.incidents.length){ $('#dsc-result').innerHTML = '<span class="muted">No incidents found in this window.</span>'; return; }
+  const rows = res.incidents.map(r=>`<tr>
+    <td class="mono">${esc(r.metric)}</td>
+    <td><span class="pill ${r.scope==='segment'?'yes':''}">${esc(r.scope)}</span></td>
+    <td class="mono">${esc(String(r.window_start).slice(0,10))}</td>
+    <td class="num">${r.buckets}</td>
+    <td>${esc(r.direction)}</td>
+    <td class="num">${(r.peak_pct_delta*100).toFixed(1)}%</td>
+    <td class="num">${Number(r.affected_requests).toLocaleString()}</td>
+    <td class="num">${r.score}</td>
+    <td class="mono">${r.localized===undefined?'<span class="muted">—</span>':esc(seg(r.localized))}</td></tr>`).join('');
+  $('#dsc-result').innerHTML = `<div class="muted" style="margin:8px 0">
+      <b>${res.count}</b> incident(s) in ${esc(res.window.start)} → ${esc(res.window.end)}
+      (${esc(res.window.grain)} grain, ${esc(res.window.scope)} scope), ranked by severity × volume.
+      Only the top ${Math.min(8,res.count)} are drilled down — the tail is usually echoes of the same event.
+      A blank <i>Localized</i> means not drilled; <span class="mono">{}</span> means the drill-down found
+      no responsible segment (the move is uniform, i.e. genuinely global).</div>
+    <table><thead><tr><th>Metric</th><th>Scope</th><th>Start</th><th class="num">Buckets</th><th>Dir</th>
+      <th class="num">Peak Δ</th><th class="num">Requests</th><th class="num">Score</th><th>Localized</th></tr></thead>
+      <tbody>${rows}</tbody></table>`;
+}
 async function runMega(){
   $('#mega-result').innerHTML = '<span class="muted">Running… all methods × 4 cases × several hours. This takes ~30–60s.</span>';
   const {job_id} = await post('/mega', {hours_per_case:3});
@@ -300,7 +369,7 @@ function renderMega(j){
     res.rows.map(r=>`<tr><td class="mono">${esc(r.variant)}</td><td>${esc(r.case)}</td><td>${esc(r.metric)}</td>
       <td class="num">${r.detected}/${r.hours}</td><td class="num">${r.mean_score??''}</td>
       <td class="mono">${esc(seg(r.localized))}</td><td>${r.hit?'<span class="pill yes">PASS</span>':'<span class="pill no">FAIL</span>'}</td></tr>`).join('')}</tbody></table>`;
-  $('#mega-result').innerHTML = `<div class="muted" style="margin:8px 0">Detection = fraction of ${res.hours_per_case} sampled hours/case that each method flagged (global level). Localization is deterministic — identical across methods.</div>
+  $('#mega-result').innerHTML = `<div class="muted" style="margin:8px 0">Detection = fraction of ${res.hours_per_case} sampled hours/case that each method flagged, <b>segment-aware</b> (global pass first; if nothing fires, scan per dimension). Global-only scoring is blind to a localised anomaly by construction — the APAC×iOS 18.1 drop is −51% in-segment but −1.2% globally — which capped every method at 3/5 cases before. Localization is deterministic — identical across methods.</div>
     <b>Leaderboard</b>${board}<div style="margin-top:14px"><b>Per case × method</b>${detail}</div>`;
 }
 async function runBench(){

@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
 from config import config
+from data.calibration import effect_threshold
 from data.client import run_query
 from metrics import metric_sql
 from rca.robust import mad, med, pct_delta, robust_z
@@ -49,10 +50,22 @@ def _baseline_start(target_hour: datetime) -> datetime: return target_hour - tim
 def _fmt(dt: datetime) -> str: return dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _detected(z: float, mad_value: float, pct: float) -> bool:
+def _detected(z: float, mad_value: float, pct: float, min_effect: float) -> bool:
+    """Statistical surprise (z-score) AND a real effect size, always both — not just as a
+    fallback when mad==0. Measured full-dataset sweep (docs/TEST_CASES.md, Clickathon2026
+    session) found z-score alone false-fires on ~15-25% of ordinary hours per metric (e.g.
+    130/840 for fill_rate) because a stable ratio's normal sampling wobble routinely trips
+    a 3.5 z-score threshold.
+
+    `min_effect` is a plain number, not looked up here — callers pass in a per-metric,
+    auto-calibrated value from data.calibration.effect_threshold(). Keeping this function
+    pure (no DB access, no config/metric lookups) is deliberate: it's covered by
+    tests/test_baseline.py's "without a live DB" unit tests, and calibration itself queries
+    ClickHouse (data.calibration.measure_natural_noise) — that lookup belongs at the engine
+    layer (score()/scan()/incidents.score_buckets()), computed once per metric, not per stat."""
     if mad_value > 0:
-        return abs(z) >= _DET["mad_z_threshold"]
-    return abs(pct) >= _DET["min_pct_delta"]
+        return abs(z) >= _DET["mad_z_threshold"] and abs(pct) >= min_effect
+    return abs(pct) >= min_effect
 
 def _where(segment: dict | None) -> tuple[str, dict]:
     if not segment:
@@ -85,7 +98,7 @@ def _baseline_sql(expr: str, where_sql: str, dim: str | None = None) -> str:
     )
 
 
-def _build_stat(segment: dict, observed: float, series: list[float]) -> Stat:
+def _build_stat(segment: dict, observed: float, series: list[float], min_effect: float) -> Stat:
     center = med(series)
     spread = mad(series, center)
     z = robust_z(observed, center, spread, _DET["mad_scale"])
@@ -93,7 +106,7 @@ def _build_stat(segment: dict, observed: float, series: list[float]) -> Stat:
     return Stat(
         segment=segment, observed=observed, expected=center, mad=spread,
         robust_z=z, pct_delta=pct, direction="drop" if observed < center else "spike",
-        detected=_detected(z, spread, pct), n_baseline=len(series),
+        detected=_detected(z, spread, pct, min_effect), n_baseline=len(series),
     )
 
 
@@ -104,6 +117,7 @@ def score(metric: str, target_hour: datetime, segment: dict | None = None) -> Re
     expr = metric_sql(metric, "rollup")
     where_sql, params = _where(segment)
     queries: list[dict] = []
+    min_effect = effect_threshold(metric)  # calibrated once, live from ClickHouse
 
     obs = run_query(_observed_sql(expr, where_sql), {"target": _fmt(target_hour), **params})
     observed = float(obs["rows"][0][0]) if obs["rows"] and obs["rows"][0][0] is not None else 0.0
@@ -113,7 +127,7 @@ def score(metric: str, target_hour: datetime, segment: dict | None = None) -> Re
     series = [float(r[0]) for r in base["rows"] if r[0] is not None]
     queries.append({"id": "q_baseline", "sql": base["resolved_sql"], "result_summary": {"n": len(series), "values": series}})
 
-    return Result(metric, target_hour, [_build_stat(segment or {}, observed, series)], queries)
+    return Result(metric, target_hour, [_build_stat(segment or {}, observed, series, min_effect)], queries)
 
 
 def scan(metric: str, target_hour: datetime, dimension: str, segment: dict | None = None) -> Result:
@@ -126,6 +140,7 @@ def scan(metric: str, target_hour: datetime, dimension: str, segment: dict | Non
     expr = metric_sql(metric, "rollup")
     where_sql, params = _where(segment)
     queries: list[dict] = []
+    min_effect = effect_threshold(metric)  # same metric for every segment -> calibrate once
 
     obs = run_query(_observed_sql(expr, where_sql, dimension), {"target": _fmt(target_hour), **params})
     observed = {r[0]: float(r[1]) for r in obs["rows"] if r[1] is not None}
@@ -138,6 +153,6 @@ def scan(metric: str, target_hour: datetime, dimension: str, segment: dict | Non
             series_by.setdefault(r[0], []).append(float(r[1]))
     queries.append({"id": "q_baseline_by_dim", "sql": base["resolved_sql"], "result_summary": {"n": len(series_by)}})
 
-    stats = [_build_stat({**(segment or {}), dimension: value}, obs_val, series_by.get(value, [])) for value, obs_val in observed.items()]
+    stats = [_build_stat({**(segment or {}), dimension: value}, obs_val, series_by.get(value, []), min_effect) for value, obs_val in observed.items()]
     stats.sort(key=lambda s: abs(s.robust_z), reverse=True)
     return Result(metric, target_hour, stats, queries)
