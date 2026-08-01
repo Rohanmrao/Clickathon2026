@@ -263,7 +263,7 @@ body {
   display: flex;
   gap: var(--base-8);
   align-items: stretch;
-  height: var(--base-220);
+  height: var(--base-204);
 }
 .split-row > .card {
   flex: 1 1 0;
