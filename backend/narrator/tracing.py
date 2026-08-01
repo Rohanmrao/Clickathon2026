@@ -65,3 +65,35 @@ def investigation_trace(
                 yield Trace(trace_id=trace_id, url=lf.get_trace_url(trace_id=trace_id))
             finally:
                 lf.flush()
+
+
+@contextmanager
+def narration_span(trace_id: str | None, metric: str):
+    """Attach the LLM generation to the trace the investigation already opened.
+
+    POST /investigate and POST /narrate/{id} are separate HTTP calls, so without the stored
+    trace_id the narration would start its own trace and a judge would see the SQL steps and
+    the LLM call as two unrelated investigations.
+
+    Yields the span (or None when tracing is off) so the caller can attach the prompt, the
+    prose and the guardrail verdict. Reattachment is attempted defensively: if the installed
+    Langfuse SDK does not accept an explicit trace context, we fall back to an unparented span
+    rather than losing the narration entirely.
+    """
+    lf = langfuse()
+    if lf is None:
+        yield None
+        return
+
+    kwargs = {"name": f"narrate:{metric}", "as_type": "generation"}
+    try:
+        cm = (lf.start_as_current_observation(trace_context={"trace_id": trace_id}, **kwargs)
+              if trace_id else lf.start_as_current_observation(**kwargs))
+    except TypeError:  # SDK without trace_context support
+        cm = lf.start_as_current_observation(**kwargs)
+
+    with cm as span:
+        try:
+            yield span
+        finally:
+            lf.flush()
