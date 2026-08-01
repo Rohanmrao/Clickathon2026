@@ -213,6 +213,33 @@ def classify(request: ChatCompletionRequest, slots: Slots) -> Intent:
     return "investigate" if slots.ready else "followup"
 
 
+# ---- conversation title (LibreChat calls the model to name the thread) -----
+
+# LibreChat generates a title via a separate completion whose prompt embeds the transcript
+# and instructs the model to write a title. Genuine investigation questions never contain the
+# word "title", so this pairing is a version-robust signal. Handling it here keeps title prompts
+# out of the slot-filler AND out of Langfuse investigation traces.
+_TITLE_CUES = ("concise", "generate a title", "summar", "conversation that",
+               "few words", "language of the", "title:", "short title")
+
+
+def is_title_request(request: ChatCompletionRequest) -> bool:
+    blob = " ".join(m.content for m in request.messages).lower()
+    return "title" in blob and any(cue in blob for cue in _TITLE_CUES)
+
+
+def make_title(request: ChatCompletionRequest) -> str:
+    """A short deterministic title from whatever the transcript reveals - no LLM call."""
+    slots = fill_slots(request)
+    if slots.metric and slots.window_start:
+        start = slots.window_start
+        return f"{slots.metric.replace('_', ' ').title()} - {start:%b} {start.day}"
+    if slots.metric:
+        return f"{slots.metric.replace('_', ' ').title()} investigation"
+    first = request.last_user_message() or "RCA investigation"
+    return first[:40].strip()
+
+
 # ---- response assembly -----------------------------------------------------
 
 def completion(

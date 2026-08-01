@@ -24,6 +24,7 @@ from pydantic import BaseModel
 from api import chat as chatlib
 from data import store
 from models import EvidenceBundle, Window
+from narrator.tracing import investigation_trace
 
 FIXTURE = Path(__file__).resolve().parents[2] / "fixtures" / "sample_bundle.json"
 
@@ -79,19 +80,26 @@ def list_bundles(limit: int = 50) -> dict:
 # Conversational layer (JAL-82). LibreChat points a custom endpoint at this.
 # ---------------------------------------------------------------------------
 
-def _run_investigation(slots: chatlib.Slots) -> EvidenceBundle:
-    """Run the pipeline for a set of filled slots.
+def _run_investigation(slots: chatlib.Slots, context_id: str) -> EvidenceBundle:
+    """Run the pipeline for a set of filled slots, inside one Langfuse trace.
 
-    Fixture-backed for now, exactly as /investigate is, so LibreChat and the dashboard can be
-    wired and demoed before Lane B's engine lands. Swapping in build_bundle() changes only
-    this function.
+    The LibreChat conversation id (context_id) is the Langfuse session_id, so every turn of a
+    chat thread groups under one session. Fixture-backed for now, exactly as /investigate is,
+    so LibreChat and the dashboard can be wired and demoed before Lane B's engine lands.
+
+    Swapping in the real pipeline changes only the body of the `with` block: build_bundle()'s
+    run_query calls and narrate()'s LLM call will auto-nest as spans under this trace.
     """
-    # TODO(JAL-79): build_bundle(slots.metric, Window(start=..., end=...)) inside
-    #   investigation_trace(), then store.save_bundle(bundle, trace_id=...).
-    bundle = EvidenceBundle.model_validate(json.loads(FIXTURE.read_text()))
-    bundle.investigation_id = str(uuid.uuid4())
-    if slots.metric:
-        bundle.metric = slots.metric
+    investigation_id = str(uuid.uuid4())
+    metric = slots.metric or "revenue"
+    with investigation_trace(investigation_id, metric, session_id=context_id) as trace_url:
+        # TODO(JAL-79): build_bundle(metric, window) + narrate(...) HERE so SQL spans and the
+        #   narration generation land in this trace.
+        bundle = EvidenceBundle.model_validate(json.loads(FIXTURE.read_text()))
+        bundle.investigation_id = investigation_id
+        bundle.metric = metric
+        if trace_url:
+            bundle.trace_url = trace_url
     return bundle
 
 
@@ -117,6 +125,13 @@ def _diagnosis_text(bundle: EvidenceBundle) -> str:
 
 
 def _handle_chat(req: chatlib.ChatCompletionRequest, context_id: str) -> dict:
+    # LibreChat's title-generation call: answer it deterministically and return. No slot-fill,
+    # no stored turn, no Langfuse investigation trace - a title is not an investigation.
+    if chatlib.is_title_request(req):
+        return chatlib.completion(
+            chatlib.make_title(req), context_id=context_id, slots=chatlib.Slots()
+        )
+
     slots = chatlib.fill_slots(req)
     intent = chatlib.classify(req, slots)
 
@@ -133,7 +148,7 @@ def _handle_chat(req: chatlib.ChatCompletionRequest, context_id: str) -> dict:
     elif intent == "followup":
         content = chatlib.ask_for_missing(slots)
     else:
-        bundle = _run_investigation(slots)
+        bundle = _run_investigation(slots, context_id)
         store.save_bundle(bundle, session_id=context_id)
         payload = chatlib.completion(
             _diagnosis_text(bundle), context_id=context_id, slots=slots,
