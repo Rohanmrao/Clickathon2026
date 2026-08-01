@@ -68,3 +68,47 @@ SELECT
     sum(revenue)       AS revenue
 FROM events_full
 GROUP BY ALL;
+
+-- ---------------------------------------------------------------------------
+-- JAL-73: system-of-record tables. ClickHouse stays the single datastore, so
+-- investigation history is queryable in SQL and survives restarts.
+-- ---------------------------------------------------------------------------
+
+-- One row per investigation. ReplacingMergeTree keyed on investigation_id so
+-- POST /narrate can rewrite the row in place (latest updated_at wins). Read with
+-- FINAL — this table holds tens of rows, not millions.
+CREATE TABLE IF NOT EXISTS investigations (
+    investigation_id  String,
+    trace_id          String DEFAULT '',          -- Langfuse trace, survives across HTTP calls
+    session_id        String DEFAULT '',          -- chat contextId, empty for direct API calls
+    created_at        DateTime,
+    updated_at        DateTime,
+    metric            LowCardinality(String),
+    window_start      DateTime,
+    window_end        DateTime,
+    primary_factor    LowCardinality(String) DEFAULT '',
+    localized_segment String DEFAULT '',          -- JSON object
+    detected          UInt8,
+    narrated          UInt8 DEFAULT 0,
+    bundle            String                      -- full EvidenceBundle JSON
+) ENGINE = ReplacingMergeTree(updated_at)
+ORDER BY investigation_id;
+
+-- Chat sessions (kangavault contextId pattern). Title is generated lazily.
+CREATE TABLE IF NOT EXISTS chat_sessions (
+    context_id String,
+    title      String DEFAULT '',
+    created_at DateTime,
+    updated_at DateTime
+) ENGINE = ReplacingMergeTree(updated_at)
+ORDER BY context_id;
+
+-- Append-only conversation history. DateTime64(3) so turns within the same
+-- second keep their order.
+CREATE TABLE IF NOT EXISTS chat_turns (
+    context_id String,
+    role       LowCardinality(String),            -- user | assistant
+    message    String,
+    created_at DateTime64(3)
+) ENGINE = MergeTree
+ORDER BY (context_id, created_at);
