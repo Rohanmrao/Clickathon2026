@@ -146,6 +146,58 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 14px; }
 .placeholder .ph-icon { width: 22px; height: 22px; color: var(--muted-2); }
 .placeholder .ph-title { font-size: 13px; font-weight: 500; color: var(--muted); }
 
+/* ---------- investigation story (Evidence Bundle renderer) ---------- */
+.btn-primary {
+  border: 0; background: var(--accent); color: #fff; font-weight: 600; font-size: 13px;
+  padding: 7px 14px; border-radius: 8px; cursor: pointer; transition: filter 0.15s ease;
+}
+.btn-primary:hover { filter: brightness(0.96); }
+.btn-primary:disabled { opacity: 0.6; cursor: default; }
+
+.story { display: grid; grid-template-columns: 1.15fr 1fr; gap: 16px; align-items: start; }
+.story-main { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.story-side { min-width: 0; }
+
+.card h3 {
+  margin: 0 0 12px; font-size: 12px; font-weight: 600; letter-spacing: 0.04em;
+  text-transform: uppercase; color: var(--muted);
+}
+.headline { font-size: 24px; font-weight: 700; letter-spacing: -0.02em; margin-bottom: 8px; color: var(--text); }
+.narrative { margin: 0; line-height: 1.6; color: var(--text); font-size: 14px; }
+
+.bar-row { display: grid; grid-template-columns: 96px 1fr 44px; align-items: center; gap: 10px; margin: 9px 0; }
+.bar-label { font-size: 13px; color: var(--text); }
+.bar-track { background: var(--surface-2); border-radius: 6px; height: 8px; overflow: hidden; }
+.bar-fill { display: block; height: 100%; background: var(--accent); border-radius: 6px; }
+.bar-val { font-size: 12px; color: var(--muted); text-align: right; }
+
+.ruled-out { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 10px; }
+.ruled-out li { font-size: 13px; line-height: 1.5; color: var(--text); }
+.check { color: var(--accent); margin-right: 6px; font-weight: 700; }
+
+.tree { display: flex; flex-direction: column; gap: 6px; }
+.node {
+  border: 2px solid var(--border); border-radius: 10px; padding: 10px 14px;
+  display: flex; flex-direction: column; gap: 2px; background: var(--bg); font-size: 13px;
+}
+.node.root { align-self: flex-start; color: var(--muted); font-weight: 600; border-style: dashed; }
+.node strong { font-weight: 600; }
+.branch { display: flex; align-items: center; gap: 8px; padding-left: 18px; }
+.edge { width: 18px; height: 2px; background: var(--border-strong); flex-shrink: 0; }
+.pct { font-size: 11.5px; color: var(--muted); }
+.localized { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 3px; }
+.localized-label { font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted-2); }
+.localized-val { font-size: 13px; font-weight: 600; color: var(--accent-ink); }
+
+.trace-btn {
+  align-self: flex-start; display: inline-flex; align-items: center; gap: 6px;
+  text-decoration: none; font-size: 13px; font-weight: 500; color: var(--accent-ink);
+  background: var(--accent-soft); padding: 8px 14px; border-radius: 8px; transition: filter 0.15s ease;
+}
+.trace-btn:hover { filter: brightness(0.97); }
+
+@media (max-width: 900px) { .story { grid-template-columns: 1fr; } }
+
 /* ---------- floating assistant (LibreChat) ---------- */
 .chat-fab {
   position: fixed; right: 24px; bottom: 24px; z-index: 60;
