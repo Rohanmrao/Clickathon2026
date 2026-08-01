@@ -100,3 +100,105 @@ def run_investigation(
         store.save_bundle(bundle, trace_id=trace.trace_id, session_id=session_id)
 
     return bundle
+
+
+# Chat-facing method aliases: friendly names -> detector keys registered in rca.detection.
+_METHOD_ALIASES = {"statistical": "robust_z", "ml": "isolation_forest"}
+
+
+def run_detection(
+    metric: str,
+    window: Window,
+    method: str | None = None,
+    session_id: str | None = None,
+) -> EvidenceBundle:
+    """Detection-grade investigation for the chat endpoint: REAL detection from ClickHouse via
+    the chosen method, narrated by Bedrock, all inside one Langfuse trace.
+
+    Unlike run_investigation (full bundle, still fixture-backed until Lane B's build_bundle lands),
+    this runs only the parts that ARE implemented today: detection.detect() and narrate(). Segment
+    localization (decompose/drill) is left EMPTY rather than faked - honest is the whole point.
+    """
+    from narrator.narrate import narrate
+    from rca.detection import detect
+
+    investigation_id = str(uuid.uuid4())
+    detector = _METHOD_ALIASES.get(method or "", method)  # 'ml'/'statistical' -> detector key
+
+    with investigation_trace(investigation_id, metric, session_id) as trace:
+        # The detectors are hour-grain; a chat window is usually a whole day. Scan the day's hours
+        # and report the worst one, so we surface the planted anomaly rather than whatever sits at
+        # midnight. `detect` is called per hour via the same chosen method.
+        anomaly, queries, hour = _scan_window(metric, window, detector)
+        bundle = _detection_bundle(investigation_id, metric, hour, anomaly, queries, detector)
+        bundle.trace_url = trace.url
+        narrate(bundle)  # Bedrock; the generation span nests inside this trace
+        store.save_bundle(bundle, trace_id=trace.trace_id, session_id=session_id)
+
+    return bundle
+
+
+def _hours_in(window: Window) -> list:
+    from datetime import timedelta
+
+    hours, t = [], window.start.replace(minute=0, second=0, microsecond=0)
+    while t < window.end:
+        hours.append(t)
+        t += timedelta(hours=1)
+    return hours or [window.start]  # zero-width window -> score the single start hour
+
+
+def _scan_window(metric: str, window: Window, detector: str | None):
+    """Score every hour in the window via the chosen detector; return the worst hour's
+    (anomaly, queries, hour-window). Prefers a detected anomaly, then the most extreme score."""
+    from datetime import timedelta
+
+    from rca.detection import detect
+
+    best = None
+    for hour in _hours_in(window):
+        target = Window(start=hour, end=hour + timedelta(hours=1))
+        anomaly, queries = detect(metric, target, detector)
+        rank = (anomaly.detected, abs(anomaly.score))
+        if best is None or rank > best[0]:
+            best = (rank, anomaly, queries, target)
+    return best[1], best[2], best[3]
+
+
+def _round_anomaly(anomaly):
+    """Present clean numbers to the narrator/UI. The exact values remain reproducible from the
+    logged queries[]; this only trims float noise so the prose doesn't cite 18.3315000001."""
+    from models import Anomaly
+
+    return Anomaly(
+        detected=anomaly.detected,
+        observed=round(anomaly.observed, 2),
+        expected=round(anomaly.expected, 2),
+        abs_delta=round(anomaly.abs_delta, 2),
+        pct_delta=round(anomaly.pct_delta, 4),
+        score=round(anomaly.score, 2),
+        direction=anomaly.direction,
+    )
+
+
+def _detection_bundle(investigation_id, metric, window, anomaly, queries, detector):
+    from models import BaselineWindow, FactorDecomposition, Query
+
+    return EvidenceBundle(
+        investigation_id=investigation_id,
+        created_at=datetime.now(),
+        metric=metric,
+        target_window=window,
+        baseline_window=BaselineWindow(
+            method="same_weekday_trailing_weeks",
+            description=f"detection via {detector or 'default'}",
+        ),
+        anomaly=_round_anomaly(anomaly),
+        # Localization is Lane B (decompose/drill); left empty rather than faked.
+        factor_decomposition=FactorDecomposition(
+            method="not_computed", factors=[], primary_factor="pending"
+        ),
+        drilldown=[],
+        ruled_out=[],
+        queries=[Query(**q) for q in queries],
+    )

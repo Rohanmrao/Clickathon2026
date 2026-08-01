@@ -98,17 +98,33 @@ def list_bundles(limit: int = 50) -> dict:
 # Conversational layer (JAL-82). LibreChat points a custom endpoint at this.
 # ---------------------------------------------------------------------------
 
-def _run_investigation(slots: chatlib.Slots, session_id: str) -> EvidenceBundle:
-    """Run the pipeline for a set of filled slots.
+def _method_from_model(model: str | None) -> str | None:
+    """Map the LibreChat-selected model name to a detection method.
 
-    Goes through the same `pipeline.run_investigation` as POST /investigate, so chat-driven
-    investigations are traced and persisted identically - the session_id additionally groups
-    every trace from one conversation together in Langfuse.
+    LibreChat sends the chosen model in the request body; we expose one model per detection path
+    (see librechat.yaml). Unknown / default model -> None -> config.detection.method default.
     """
-    window = None
-    if slots.window_start:
-        window = Window(start=slots.window_start, end=slots.window_end or slots.window_start)
-    return pipeline.run_investigation(slots.metric or "revenue", window, session_id=session_id)
+    name = (model or "").lower()
+    if any(k in name for k in ("ml", "isolation", "forest")):
+        return "ml"
+    if any(k in name for k in ("stat", "robust", "baseline")):
+        return "statistical"
+    return None
+
+
+def _run_investigation(
+    slots: chatlib.Slots, session_id: str, method: str | None = None
+) -> EvidenceBundle:
+    """Run a detection-grade investigation for the chat, via the caller's chosen method.
+
+    Goes through `pipeline.run_detection`: REAL detection from ClickHouse (statistical or ML) +
+    Bedrock narration, traced and persisted, with session_id grouping the conversation's traces
+    in Langfuse. Segment localization awaits Lane B's decompose/drill.
+    """
+    window = Window(start=slots.window_start, end=slots.window_end or slots.window_start)
+    return pipeline.run_detection(
+        slots.metric or "revenue", window, method=method, session_id=session_id
+    )
 
 
 def _diagnosis_text(bundle: EvidenceBundle) -> str:
@@ -125,14 +141,16 @@ def _diagnosis_text(bundle: EvidenceBundle) -> str:
     if bundle.ruled_out:
         lines.append("\n**Checked and ruled out:**")
         lines += [f"- {r.hypothesis}: {r.evidence}" for r in bundle.ruled_out]
-    footer = f"\n_investigation `{bundle.investigation_id}`_"
+    footer = f"\n_investigation `{bundle.investigation_id}` · {bundle.baseline_window.description}_"
     if bundle.trace_url:
         footer += f" · [trace]({bundle.trace_url})"
     lines.append(footer)
     return "\n".join(lines)
 
 
-def _handle_chat(req: chatlib.ChatCompletionRequest, context_id: str) -> dict:
+def _handle_chat(
+    req: chatlib.ChatCompletionRequest, context_id: str, method: str | None = None
+) -> dict:
     # LibreChat's title-generation call: answer it deterministically and return. No slot-fill,
     # no stored turn, no Langfuse investigation trace - a title is not an investigation.
     if chatlib.is_title_request(req):
@@ -156,7 +174,7 @@ def _handle_chat(req: chatlib.ChatCompletionRequest, context_id: str) -> dict:
     elif intent == "followup":
         content = chatlib.ask_for_missing(slots)
     else:
-        bundle = _run_investigation(slots, context_id)  # traced + persisted inside
+        bundle = _run_investigation(slots, context_id, method)  # real detection, traced + persisted
         payload = chatlib.completion(
             _diagnosis_text(bundle), context_id=context_id, slots=slots,
             investigation=bundle.model_dump(mode="json"),
@@ -202,7 +220,8 @@ def chat_completions(
     Both paths are registered because LibreChat's baseURL may or may not already include /v1.
     """
     context_id = x_session_id or req.conversation_id or str(uuid.uuid4())
-    payload = _handle_chat(req, context_id)
+    method = _method_from_model(req.model)
+    payload = _handle_chat(req, context_id, method)
     if req.stream:
         return StreamingResponse(_sse(payload), media_type="text/event-stream")
     return payload

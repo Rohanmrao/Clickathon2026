@@ -30,6 +30,7 @@ def _bundle_numbers(bundle: EvidenceBundle) -> set[str]:
             f = float(t)
         except ValueError:
             continue
+        tokens.add(_norm(f"{abs(f) * 100:.2f}"))  # 2dp % (Sonnet's default, e.g. -0.0332 -> 3.32)
         tokens.add(_norm(f"{abs(f) * 100:.1f}"))
         tokens.add(_norm(f"{abs(f) * 100:.0f}"))
         tokens.add(_norm(f"{f:.0f}"))
