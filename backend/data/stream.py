@@ -28,13 +28,14 @@ from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from config import config
+from config import config, env
 from data.client import get_client
 from data.load import _statements, load_csv
 
 log = logging.getLogger(__name__)
 
-_REPO = Path(__file__).resolve().parents[2]
+_REPO = Path(__file__).resolve().parents[2]        # <repo> on a host checkout
+_BACKEND_ROOT = Path(__file__).resolve().parents[1]  # /app in the container image
 
 # Dimension CSVs ship WITH the unseen slice and must be loaded from there: same ids, regenerated
 # attributes. Joining unseen events to the dev dims misattributes every segment.
@@ -48,7 +49,21 @@ def stream_config() -> dict:
 
 
 def source_dir() -> Path:
-    return _REPO / stream_config()["source_dir"]
+    """Where the unseen slice lives.
+
+    Resolved rather than hardcoded because the layout differs by environment: on the host the
+    code is <repo>/backend/data/stream.py, but the image copies backend/ to /app, so the same
+    parents[2] that means "repo root" locally means "/" in the container — which is how this
+    resolved to /InMobi/unseen_data and failed. RCA_STREAM_DIR overrides both.
+    """
+    override = env("RCA_STREAM_DIR")
+    if override:
+        return Path(override)
+    rel = stream_config()["source_dir"]
+    for base in (_REPO, _BACKEND_ROOT):
+        if (base / rel).exists():
+            return base / rel
+    return _REPO / rel  # nothing found: return the canonical path so the error names it
 
 
 def _t() -> dict:

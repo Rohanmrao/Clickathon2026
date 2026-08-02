@@ -45,6 +45,12 @@ services:
     ports:
       - "8000:8000"
     env_file: .env
+    volumes:
+      # The datasets live OUTSIDE the build context (which is ./backend), so nothing under
+      # InMobi/ is in the image — /stream/start failed on a missing apps.csv until this existed.
+      # Mounted rather than COPYed: it is ~15MB of data, the parquet is gitignored, and mounting
+      # lets a different slice be swapped in without rebuilding.
+      - ./InMobi:/app/InMobi:ro
     environment:
       # SDK ingests to the internal service name; trace LINKS use the browser-facing host, since
       # the host browser can't resolve langfuse-web. Without the split, "Open trace" dead-links.
