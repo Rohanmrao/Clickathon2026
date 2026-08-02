@@ -106,9 +106,21 @@ def test_list_bundles_forwards_limit(client, monkeypatch):
 
 
 def test_list_bundles_empty_is_not_an_error(client, monkeypatch):
+    # Datastore reachable but no rows yet: 200 with an empty list and engine:"live".
+    monkeypatch.setattr("api.main.clickhouse_available", lambda: True)
     monkeypatch.setattr("api.main.store.list_investigations", lambda limit: [])
 
     res = client.get("/bundles")
 
     assert res.status_code == 200
     assert res.json() == {"count": 0, "investigations": [], "engine": "live"}
+
+
+def test_list_bundles_offline_fails_soft(client, monkeypatch):
+    # Datastore unreachable: fail soft (200 + engine:"offline"), never a 500.
+    monkeypatch.setattr("api.main.clickhouse_available", lambda: False)
+
+    res = client.get("/bundles")
+
+    assert res.status_code == 200
+    assert res.json() == {"count": 0, "investigations": [], "engine": "offline"}

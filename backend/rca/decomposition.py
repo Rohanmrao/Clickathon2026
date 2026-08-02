@@ -92,7 +92,7 @@ def decompose(metric: str, target: Window, baseline: Window) -> tuple[FactorDeco
         "target_start": _fmt(target.start), "target_end": _fmt(target.end),
         "base_start": _fmt(baseline.start), "base_end": _fmt(baseline.end),
     }
-    res = run_query(sql, params)
+    res = run_query(sql, params, name="sql:factor-sums")
     row = res["rows"][0]
     obs = {c: (row[2 * i] or 0) for i, c in enumerate(_COMPONENTS)}
     exp = {c: (row[2 * i + 1] or 0) for i, c in enumerate(_COMPONENTS)}
