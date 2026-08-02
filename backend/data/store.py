@@ -168,19 +168,40 @@ def load_meta(investigation_id: str) -> tuple[str | None, str | None]:
     return (rows[0][0] or None), (rows[0][1] or None)
 
 
+_DASHBOARD_FIELDS = [  # everything NOT in _INCIDENT_KEY; those are grouping keys already
+    "investigation_id", "window_end", "direction",
+    "observed", "expected", "pct_delta", "score", "is_anomaly", "primary_factor",
+    "ruled_out_count", "ruled_out_summary", "narrative", "narrated", "trace_url",
+]
+
+# One incident = one metric moving in one window in one segment. Re-investigating it is a new
+# bundle but not a new finding.
+_INCIDENT_KEY = "metric, window_start, localized_segment"
+
+
 def list_dashboard(limit: int = 50, since: datetime | None = None) -> list[dict[str, Any]]:
     """Dashboard poll query, straight off `bundles`. `since` (a row's created_at from a prior
     poll) returns only rows created after it, so a polling client doesn't re-fetch everything
-    every tick. Excludes the `bundle` JSON column — the card view doesn't need it."""
+    every tick. Excludes the `bundle` JSON column — the card view doesn't need it.
+
+    Deduplicated to DISTINCT INCIDENTS, newest run wins. Investigating the same incident twice
+    (a re-run, or a sweep finding you drill again) writes two bundles, and without this the
+    switcher lists the same anomaly five times — which is what it did.
+    """
     where = "WHERE created_at > {since:DateTime}" if since else ""
+    # `latest_at`, not `created_at`: aliasing an aggregate to the column name it aggregates makes
+    # every other argMax(..., created_at) resolve to the alias and fail as a nested aggregate.
+    latest = ", ".join(f"argMax({f}, created_at) AS {f}" for f in _DASHBOARD_FIELDS)
     result = get_client().query(
-        f"SELECT investigation_id, created_at, window_start, window_end, metric, direction, "
-        f"observed, expected, pct_delta, score, is_anomaly, primary_factor, localized_segment, "
-        f"ruled_out_count, ruled_out_summary, narrative, narrated, trace_url "
-        f"FROM {BUNDLES} FINAL {where} ORDER BY created_at DESC LIMIT {{n:UInt32}}",
+        f"SELECT {_INCIDENT_KEY}, max(created_at) AS latest_at, {latest} "
+        f"FROM {BUNDLES} FINAL {where} "
+        f"GROUP BY {_INCIDENT_KEY} ORDER BY latest_at DESC LIMIT {{n:UInt32}}",
         parameters={"n": limit, **({"since": _naive(since)} if since else {})},
     )
-    return [dict(zip(result.column_names, r)) for r in result.result_rows]
+    rows = [dict(zip(result.column_names, r)) for r in result.result_rows]
+    for row in rows:  # callers expect created_at, not the internal ordering alias
+        row["created_at"] = row.pop("latest_at")
+    return rows
 
 
 def list_investigations(limit: int = 50) -> list[dict[str, Any]]:
