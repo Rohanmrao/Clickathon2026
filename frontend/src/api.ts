@@ -83,6 +83,7 @@ export interface IncidentRow {
   direction: string;
   pct_delta: number;
   is_anomaly: number;
+  primary_factor: string;
   localized_segment: string; // JSON string
   narrated: number;
 }
@@ -92,7 +93,14 @@ export async function listIncidents(limit = 50): Promise<IncidentRow[]> {
     const res = await fetch(`${API}/dashboard?limit=${limit}`);
     if (!res.ok) throw new Error(String(res.status));
     const data = await res.json();
-    return (data.incidents as IncidentRow[]).filter((r) => r.is_anomaly === 1);
+    // The chat path (POST /v1/chat/completions) persists a detection-only bundle — real
+    // anomaly, but no decompose/drill yet (primary_factor stays "pending"). Showcasing one
+    // would leave the factor split, ruled-out panel and drill tree empty on the dashboard, so
+    // the switcher only offers fully-investigated bundles. Chat-only anomalies still surface
+    // through GET /bundles (Past investigations) and remain replayable in chat.
+    return (data.incidents as IncidentRow[]).filter(
+      (r) => r.is_anomaly === 1 && r.primary_factor && r.primary_factor !== "pending"
+    );
   } catch {
     return [];
   }

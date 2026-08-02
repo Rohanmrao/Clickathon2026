@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { InvestigationRow } from "../types";
 import { sendChat, type ChatTurn } from "../api";
+import { MarkdownLite } from "./MarkdownLite";
 
 const ChatIcon = (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -130,10 +131,10 @@ export function SidebarDock({
           )}
           {turns.map((t, i) => (
             <div key={i} className={`chat-msg ${t.role}`}>
-              <pre className="chat-text">{t.content}</pre>
+              {t.role === "assistant" ? <MarkdownLite text={t.content} /> : t.content}
             </div>
           ))}
-          {busy && <div className="chat-msg assistant">…</div>}
+          {busy && <div className="chat-msg assistant chat-typing"><span /><span /><span /></div>}
         </div>
         <div className="chat-input-row">
           <input
