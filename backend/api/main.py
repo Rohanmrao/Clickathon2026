@@ -28,6 +28,7 @@ from data import store
 from data.client import clickhouse_available
 from models import EvidenceBundle, Window
 from narrator import narrate, trace_read
+from rca import series
 
 app = FastAPI(title="Automated Root-Cause Analyst")
 app.add_middleware(
@@ -129,6 +130,24 @@ def list_bundles(limit: int = 50) -> dict:
         return {"count": 0, "investigations": [], "engine": "offline"}
     rows = store.list_investigations(limit)
     return {"count": len(rows), "investigations": rows, "engine": "live"}
+
+
+@app.get("/series/{investigation_id}")
+def get_series(investigation_id: str) -> dict:
+    """Hourly actual-vs-expected series behind the anomaly card's chart.
+
+    The metric in 1-hour chunks over the 24 hours ending at the anomaly, plus the like-for-like
+    expected line — population-wide (global), to match the card's headline % and observed/expected.
+    The two SQL queries are logged to the investigation's trace like every other number shown.
+
+    Fails soft: an unreachable datastore returns 503, a missing investigation 404.
+    """
+    if not clickhouse_available():
+        raise HTTPException(status_code=503, detail="Investigation store offline (check CLICKHOUSE_*)")
+    bundle = store.load_bundle(investigation_id)
+    if bundle is None:
+        raise HTTPException(status_code=404, detail=f"No investigation {investigation_id!r}")
+    return series.hourly_series(bundle)
 
 
 @app.get("/trace/{investigation_id}")
