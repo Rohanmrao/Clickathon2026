@@ -283,6 +283,14 @@ export interface StreamDetection {
   investigation_id?: string | null;
 }
 
+export interface SegmentFinding {
+  metric: string;              // e.g. "fill_rate[category=gaming]" for a segment-scoped find
+  peak_pct_delta: number;
+  direction: string;
+  scope?: string;              // "global" | "segment"
+  localized?: Record<string, string> | { error: string };
+}
+
 export interface StreamStatus {
   status: "idle" | "running" | "done" | "stopped" | "error";
   batches_done?: number;
@@ -290,6 +298,9 @@ export interface StreamStatus {
   rows_ingested?: number;
   checks?: number;
   detections?: StreamDetection[];
+  segment_findings?: SegmentFinding[];   // deep scan: global + per-segment
+  deep_scans?: number;
+  deep_scan_window?: [string, string] | null;
   current_window?: [string, string] | null;
   last_tick_ms?: number;
   dataset?: string;

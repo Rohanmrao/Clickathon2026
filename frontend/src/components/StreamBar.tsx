@@ -1,4 +1,4 @@
-import type { StreamDetection, StreamStatus } from "../api";
+import type { SegmentFinding, StreamDetection, StreamStatus } from "../api";
 
 function pct(value: number): string {
   return `${value < 0 ? "−" : "+"}${Math.abs(value * 100).toFixed(1)}%`;
@@ -74,6 +74,23 @@ export function StreamBar({ stream, onStop }: { stream: StreamStatus; onStop: ()
       </div>
 
       {stream.error && <div className="sb-error">Stream error: {stream.error}</div>}
+
+      {(stream.segment_findings?.length ?? 0) > 0 && (
+        <div className="sb-hits">
+          <span className="eyebrow">
+            Deep scan · {stream.segment_findings!.length} findings
+            {stream.deep_scans ? ` · pass ${stream.deep_scans}` : ""}
+          </span>
+          <div className="sb-hit-list">
+            {stream.segment_findings!.map((f: SegmentFinding, i: number) => (
+              <span key={`${f.metric}-${i}`} className={`sb-hit ${f.scope === "segment" ? "is-segment" : ""}`}>
+                <span className="mono">{f.metric}</span>
+                <span className={f.peak_pct_delta < 0 ? "is-drop" : "is-spike"}>{pct(f.peak_pct_delta)}</span>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
 
       {hits.length > 0 ? (
         <div className="sb-hits">

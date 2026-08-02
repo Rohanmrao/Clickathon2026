@@ -1410,3 +1410,7 @@ body {
   text-overflow: ellipsis;
 }
 .brand { flex: 0 1 auto; }
+
+/* Deep-scan findings sit alongside the per-hour global hits; segment-scoped ones are the
+   ones per-batch global detection cannot see, so they read differently. */
+.sb-hit.is-segment { border-color: var(--border-secondary-default); background: var(--bg-secondary-bright-default); }

@@ -21,7 +21,7 @@ import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from config import config
@@ -45,7 +45,10 @@ def _fresh_state(total: int, cfg: dict) -> dict:
         "batches_done": 0,
         "batches_total": total,
         "rows_ingested": 0,
-        "detections": [],          # only the hits — see module docstring
+        "detections": [],          # per-hour GLOBAL hits — see module docstring
+        "segment_findings": [],    # deep-scan results: global + per-segment, echo-folded
+        "deep_scans": 0,
+        "deep_scan_window": None,
         "checks": 0,               # metric-hours scored
         "current_window": None,
         "config": cfg,
@@ -100,6 +103,27 @@ def _detect_batch(metrics: list[str], method: str, start: datetime, end: datetim
     return [r for r in scored if r["detected"]], scored
 
 
+
+def _deep_scan(stream_start: datetime, upto: datetime) -> list[dict]:
+    """Segment-aware sweep over everything streamed so far.
+
+    Per-batch detection is GLOBAL only — it scores each metric across the whole population, so an
+    anomaly that is severe inside one segment but diluted to nothing globally is invisible to it
+    by construction. Measured on this slice: the sweep's five findings were four segment-scoped
+    and one global; the stream saw only the global ones.
+
+    Rather than reimplement that, this calls the SAME dev.discover() the "Find anomalies" sweep
+    calls. Running it over the accumulated window — and always on the final batch — is what makes
+    the stream and the sweep agree at the end: the last deep scan is literally the same function
+    over the same range. Costs ~20-30s, so it runs every `deep_scan_every` batches, not per tick.
+    """
+    from api import dev
+
+    result = dev.discover(stream_start.strftime("%Y-%m-%d"),
+                          (upto + timedelta(days=1)).strftime("%Y-%m-%d"))
+    return [r for r in result["incidents"] if r["role"] == "primary"]
+
+
 def _investigate(metric: str, start: datetime, end: datetime, method: str, session: str) -> str | None:
     """Full traced+persisted investigation for a hit, so it lands in the dashboard feed."""
     from api import pipeline
@@ -116,11 +140,14 @@ def _investigate(metric: str, start: datetime, end: datetime, method: str, sessi
 def _run(cfg: dict) -> None:
     session = f"stream-{datetime.now():%Y%m%d-%H%M%S}"
     skip = set() if cfg.get("reanalyze") else stream.analyzed_hours()
+    stream_start = None
     try:
         for start, end in stream.windows(cfg["batch_hours"]):
             if _stop.is_set():
                 break
             tick_started = time.perf_counter()
+            if stream_start is None:
+                stream_start = start
 
             rows = stream.release(start, end)
             hits, scored = (
@@ -143,6 +170,19 @@ def _run(cfg: dict) -> None:
                 _state["current_window"] = [start.isoformat(timespec="seconds"),
                                             end.isoformat(timespec="seconds")]
                 _state["last_tick_ms"] = round((time.perf_counter() - tick_started) * 1000)
+
+            every = cfg.get("deep_scan_every") or 0
+            is_last = _state["batches_done"] >= _state["batches_total"]
+            if every and (_state["batches_done"] % every == 0 or is_last):
+                try:
+                    findings = _deep_scan(stream_start, end)
+                    with _lock:
+                        _state["segment_findings"] = findings
+                        _state["deep_scans"] += 1
+                        _state["deep_scan_window"] = [stream_start.isoformat(timespec="seconds"),
+                                                      end.isoformat(timespec="seconds")]
+                except Exception as exc:  # noqa: BLE001 - a failed deep scan must not stop ingestion
+                    log.warning("stream: deep scan failed at %s: %s", end, exc)
 
             _stop.wait(max(0.0, cfg["tick_seconds"] - (time.perf_counter() - tick_started)))
     except Exception as exc:
