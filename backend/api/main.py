@@ -15,6 +15,8 @@ from __future__ import annotations
 import json
 import uuid
 
+from datetime import datetime
+
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -106,10 +108,10 @@ def get_bundle(investigation_id: str) -> EvidenceBundle:
 
 @app.get("/bundles")
 def list_bundles(limit: int = 50) -> dict:
-    """Investigation history — the flattened columns, not the full bundles.
-
-    Lets the dashboard show past runs and lets a judge see what the system has
-    investigated without pulling every bundle body.
+    """Investigation history — flattened rows (metric, window, primary factor, localization,
+    detected/narrated flags, trace/session ids), not the full bundles. Powers the dashboard's
+    past-runs panel; for the anomaly-only switcher feed use GET /dashboard, for one full bundle
+    use GET /bundle/{investigation_id}.
 
     Fails soft: when the datastore is unreachable (e.g. CLICKHOUSE_* unset in a container) this
     returns an empty history with engine:"offline" rather than 500-ing and blanking the dashboard.
@@ -118,6 +120,20 @@ def list_bundles(limit: int = 50) -> dict:
         return {"count": 0, "investigations": [], "engine": "offline"}
     rows = store.list_investigations(limit)
     return {"count": len(rows), "investigations": rows, "engine": "live"}
+
+
+@app.get("/dashboard")
+def list_dashboard(limit: int = 50, since: datetime | None = None) -> dict:
+    """Dashboard-ready incident feed, meant to be polled.
+
+    Reads `bundles` directly — the anomaly numbers/localization/ruled-out summary are already
+    flattened so the dashboard never has to parse the full bundle JSON just to render a card.
+
+    Pass `since` (the `created_at` of the newest row already shown) to fetch only what's new
+    since the last poll instead of re-pulling the whole list every tick.
+    """
+    rows = store.list_dashboard(limit, since)
+    return {"count": len(rows), "incidents": rows}
 
 
 # ---------------------------------------------------------------------------
@@ -179,6 +195,66 @@ def _diagnosis_text(bundle: EvidenceBundle) -> str:
     return "\n".join(lines)
 
 
+def _replay_text(bundle: EvidenceBundle) -> str:
+    """End-to-end walkthrough of a stored investigation, built deterministically from the
+    bundle — every number below is read from stored evidence, none is generated. This is the
+    demo's "replay this incident" answer: how it was detected, which factor moved, where it
+    localized, what was checked and cleared, and where the trace lives.
+    """
+    a = bundle.anomaly
+    lines = [f"## Replay: {bundle.metric} {a.direction} on "
+             f"{bundle.target_window.start:%b %d %H:%M} – {bundle.target_window.end:%b %d %H:%M}\n"]
+
+    lines.append(
+        f"**1 — Detection.** {bundle.metric} came in at **{a.observed:.4g}** against an expected "
+        f"**{a.expected:.4g}** ({bundle.baseline_window.description}), a move of "
+        f"**{a.pct_delta * 100:+.1f}%** (robust score {a.score:.1f}). That cleared both the "
+        f"statistical and the calibrated effect-size gate, so an investigation was opened."
+    )
+
+    fd = bundle.factor_decomposition
+    if fd and fd.factors:
+        parts = [f"{f.factor} ({f.from_:.4g} → {f.to:.4g})" for f in fd.factors]
+        lines.append(
+            f"**2 — Which factor moved.** The metric was decomposed ({fd.method}) into: "
+            f"{'; '.join(parts)}. **{fd.primary_factor}** carried the change and became the "
+            f"drill-down target."
+        )
+
+    if bundle.drilldown:
+        steps = []
+        for node in bundle.drilldown:
+            seg = " AND ".join(f"{k}={v}" for k, v in node.segment.items()) or "(all)"
+            move = (f", {node.metric_from:.4g} → {node.metric_to:.4g}"
+                    if node.metric_from is not None and node.metric_to is not None else "")
+            steps.append(f"  - depth {node.depth}, split by `{node.split_dimension}` → "
+                         f"**{seg}** [{node.status}] ({node.contribution_pct * 100:+.1f}% of the delta{move})")
+        lines.append("**3 — Drill-down.** Each dimension's segments were ranked by their "
+                     "contribution to the delta, recursing into the top contributor:\n" + "\n".join(steps))
+
+    if bundle.localized_segment:
+        seg = " AND ".join(f"{k}={v}" for k, v in bundle.localized_segment.items())
+        lines.append(f"**4 — Verdict.** The anomaly localized to **{seg}** — every sub-segment "
+                     f"inside it moved uniformly, so recursion stopped there.")
+    else:
+        lines.append("**4 — Verdict.** No single segment stood out — the move was "
+                     "population-wide, which is itself the finding.")
+
+    if bundle.ruled_out:
+        cleared = [f"  - **{r.hypothesis}**: {r.evidence}" for r in bundle.ruled_out]
+        lines.append("**5 — Checked and ruled out.**\n" + "\n".join(cleared))
+
+    if bundle.narrative:
+        lines.append(f"**Summary.** {bundle.narrative}")
+
+    tail = (f"_Every number above is reproducible from the {len(bundle.queries)} logged SQL "
+            f"queries in investigation `{bundle.investigation_id}`._")
+    if bundle.trace_url:
+        tail += f" [Open the Langfuse trace]({bundle.trace_url})"
+    lines.append(tail)
+    return "\n\n".join(lines)
+
+
 def _handle_chat(
     req: chatlib.ChatCompletionRequest, context_id: str, method: str | None = None
 ) -> dict:
@@ -191,6 +267,11 @@ def _handle_chat(
 
     slots = chatlib.fill_slots(req)
     intent = chatlib.classify(req, slots)
+    # With the dashboard's bundle context, an under-specified question ("what was ruled out?",
+    # "any incidents?") is about the anomaly ON SCREEN — answer from that bundle instead of
+    # asking for metric/window or scanning. Fully-specified investigate requests still run.
+    if req.bundle_id and intent in ("followup", "scan"):
+        intent = "replay"
 
     store.upsert_session(context_id)
     if req.last_user_message():
@@ -199,6 +280,25 @@ def _handle_chat(
     if intent == "greeting":
         content = ("I investigate metric anomalies. Ask me something like "
                    "\"why did revenue drop on June 23?\" and I'll find the responsible segment.")
+    elif intent == "replay":
+        # Rebuilt from the stored bundle — no re-detection, no LLM, no invented numbers.
+        # The dashboard sends the showcased anomaly's bundle_id, so "this anomaly" means the one
+        # on screen; without it, `slots.metric` narrows to that metric's latest anomaly, else
+        # the overall latest.
+        bundle = (store.load_bundle(req.bundle_id) if req.bundle_id
+                  else store.load_latest_anomaly(slots.metric))
+        if bundle is None:
+            content = ("No detected anomaly is stored yet — run an investigation first "
+                       "(e.g. \"why did fill rate drop on June 23?\") and then ask me to replay it.")
+        else:
+            payload = chatlib.completion(
+                _replay_text(bundle), context_id=context_id, slots=slots,
+                investigation=bundle.model_dump(mode="json"),
+                plot_kind="metric_tree",
+                plot_data=[n.model_dump(mode="json") for n in bundle.drilldown],
+            )
+            store.add_turn(context_id, "assistant", payload["choices"][0]["message"]["content"])
+            return payload
     elif intent == "scan":
         content = ("Ask me about a specific metric and period and I'll investigate - "
                    "for example \"why did fill rate drop on June 23?\".")

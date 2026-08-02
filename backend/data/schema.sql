@@ -72,25 +72,58 @@ GROUP BY ALL;
 -- ---------------------------------------------------------------------------
 -- JAL-73: system-of-record tables. ClickHouse stays the single datastore, so
 -- investigation history is queryable in SQL and survives restarts.
+--
+-- Split in two: `bundles` holds the actual evidence (everything detection +
+-- decomposition + drill-down + narration produced — the dashboard reads
+-- straight from here); `investigations` is a lean session/tracking record
+-- (trace id, chat session, timestamps) that references its evidence by id
+-- rather than duplicating it. bundle_id == investigation_id today (one
+-- investigation produces exactly one bundle), kept as its own column/FK
+-- rather than reused so the two tables stay conceptually independent.
 -- ---------------------------------------------------------------------------
 
--- One row per investigation. ReplacingMergeTree keyed on investigation_id so
--- POST /narrate can rewrite the row in place (latest updated_at wins). Read with
--- FINAL — this table holds tens of rows, not millions.
+-- One row per DETECTION RUN — the traceability record. Anomalies are rare, so
+-- most rows are "checked, normal" (is_anomaly=0, stats only); when a run does
+-- detect (is_anomaly=1) the row carries the full drilled-down evidence. Keyed
+-- ReplacingMergeTree on investigation_id so POST /narrate can rewrite the row
+-- in place (latest updated_at wins). Read with FINAL — tens of rows, not
+-- millions. Flattened columns (metric, observed/expected/etc, primary_factor,
+-- localized_segment, ruled_out_summary) let the dashboard render a card
+-- without parsing `bundle`; `bundle` itself is the full schema-valid
+-- EvidenceBundle JSON, the source of truth for GET /bundle/{id}.
+CREATE TABLE IF NOT EXISTS bundles (
+    investigation_id  String,
+    created_at        DateTime,
+    updated_at        DateTime,
+    window_start      DateTime,
+    window_end        DateTime,
+    metric            LowCardinality(String),
+    direction         LowCardinality(String) DEFAULT '',   -- drop | spike
+    observed          Float64 DEFAULT 0,
+    expected          Float64 DEFAULT 0,
+    pct_delta         Float64 DEFAULT 0,
+    score             Float64 DEFAULT 0,
+    is_anomaly        UInt8,                      -- 0 = checked & normal (most rows), 1 = anomaly
+    primary_factor    LowCardinality(String) DEFAULT '',
+    localized_segment String DEFAULT '',          -- JSON object, e.g. {"os_version":"Android 15"}
+    ruled_out_count   UInt8 DEFAULT 0,
+    ruled_out_summary String DEFAULT '',          -- comma-joined hypothesis names, for a quick tooltip
+    narrative         String DEFAULT '',
+    narrated          UInt8 DEFAULT 0,
+    trace_url         String DEFAULT '',
+    bundle            String                      -- full EvidenceBundle JSON
+) ENGINE = ReplacingMergeTree(updated_at)
+ORDER BY investigation_id;
+
+-- One row per investigation run. References its evidence via bundle_id rather
+-- than storing it — join to `bundles` for the numbers, or GET /bundle/{id}.
 CREATE TABLE IF NOT EXISTS investigations (
     investigation_id  String,
+    bundle_id         String,                     -- FK -> bundles.investigation_id
     trace_id          String DEFAULT '',          -- Langfuse trace, survives across HTTP calls
     session_id        String DEFAULT '',          -- chat contextId, empty for direct API calls
     created_at        DateTime,
-    updated_at        DateTime,
-    metric            LowCardinality(String),
-    window_start      DateTime,
-    window_end        DateTime,
-    primary_factor    LowCardinality(String) DEFAULT '',
-    localized_segment String DEFAULT '',          -- JSON object
-    detected          UInt8,
-    narrated          UInt8 DEFAULT 0,
-    bundle            String                      -- full EvidenceBundle JSON
+    updated_at        DateTime
 ) ENGINE = ReplacingMergeTree(updated_at)
 ORDER BY investigation_id;
 

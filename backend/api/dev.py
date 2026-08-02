@@ -410,7 +410,62 @@ def _run_engine_job(job_id: str) -> None:
         _JOBS[job_id].update(status="error", finished=True, log=str(exc))
 
 
-def start_discover_job(start: str, end: str, grain: str, scope: str, min_effect: float) -> dict:
+def seed_bundles(start: str, end: str, method: str = "robust_z") -> dict:
+    """Run discover, then a FULL investigation (decompose + drill + narrate + persist) for each
+    primary incident — one Evidence Bundle per real anomaly, stored in `bundles` for the
+    dashboard's anomaly switcher. Echo/secondary rows are skipped: they are the same underlying
+    incident seen from another angle, and each would otherwise burn a full pipeline run."""
+    from api import pipeline as pipe
+
+    found = discover(start, end, method=method)
+    seeded, skipped = [], 0
+    for row in found["incidents"]:
+        if row["role"] != "primary":
+            skipped += 1
+            continue
+        metric = incidents.base_metric(row["metric"])
+        window = Window(start=datetime.fromisoformat(row["window_start"]),
+                        end=datetime.fromisoformat(row["window_end"]))
+        try:
+            b = pipe.run_investigation(metric, window)
+            # Segment-scoped incidents were detected by the SEGMENT sweep; the bundle's global
+            # window-grain re-score is diluted by construction (the APAC/iOS 18.1 drop is -51%
+            # in-segment but ~-1% globally). The sweep's verdict is the true one — carry it.
+            if row.get("scope") == "segment" and not b.anomaly.detected:
+                b.anomaly.detected = True
+                from data import store as _store
+                _store.save_bundle(b, *_store.load_meta(b.investigation_id))
+            pipe.narrate_investigation(b.investigation_id)
+            seeded.append({"investigation_id": b.investigation_id, "metric": metric,
+                           "window": row["window_start"], "scope": row.get("scope"),
+                           "localized": b.localized_segment, "detected": b.anomaly.detected})
+        except Exception as exc:  # noqa: BLE001 — one bad incident must not sink the batch
+            seeded.append({"metric": metric, "window": row["window_start"], "error": str(exc)})
+    return {"seeded": len([s for s in seeded if "error" not in s]),
+            "errors": len([s for s in seeded if "error" in s]),
+            "echoes_skipped": skipped, "bundles": seeded}
+
+
+def start_seed_job(start: str, end: str, method: str = "robust_z") -> dict:
+    """8+ full investigations (each: detect + decompose + drill + LLM narrate) takes minutes —
+    background job like /discover; poll /dev/jobs/{id}."""
+    job_id = uuid4().hex[:8]
+    _JOBS[job_id] = {"status": "running", "log": "", "finished": False, "result": None}
+
+    def _run() -> None:
+        try:
+            result = seed_bundles(start, end, method)
+            _JOBS[job_id].update(status="done", finished=True, result=result,
+                                 log=f"{result['seeded']} bundles seeded, {result['errors']} errors")
+        except Exception as exc:  # noqa: BLE001
+            _JOBS[job_id].update(status="error", finished=True, log=str(exc))
+
+    threading.Thread(target=_run, daemon=True).start()
+    return {"job_id": job_id}
+
+
+def start_discover_job(start: str, end: str, grain: str, scope: str, min_effect: float,
+                       method: str = "robust_z") -> dict:
     """A full segment sweep is ~50 queries (a metric x dimension pass each), so run it in the
     background like /mega rather than holding the request open."""
     job_id = uuid4().hex[:8]
@@ -549,6 +604,13 @@ class DiscoverReq(BaseModel):
     start: str = "2026-06-01"
     end: str = "2026-07-06"
     method: str = "robust_z"
+
+
+@router.post("/seed_bundles")
+def seed_bundles_endpoint(req: DiscoverReq) -> dict:
+    # Same request shape as /discover; runs the full pipeline per primary incident and
+    # persists one Evidence Bundle each. Background job; poll /dev/jobs/{id}.
+    return start_seed_job(req.start, req.end, method=req.method)
 
 
 @router.post("/discover")

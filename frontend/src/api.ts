@@ -72,3 +72,50 @@ export async function getHealth(): Promise<Health | null> {
     return null;
   }
 }
+
+// One row per stored anomaly/run — the dashboard's incident switcher list.
+export interface IncidentRow {
+  investigation_id: string;
+  created_at: string;
+  window_start: string;
+  window_end: string;
+  metric: string;
+  direction: string;
+  pct_delta: number;
+  is_anomaly: number;
+  localized_segment: string; // JSON string
+  narrated: number;
+}
+
+export async function listIncidents(limit = 50): Promise<IncidentRow[]> {
+  try {
+    const res = await fetch(`${API}/dashboard?limit=${limit}`);
+    if (!res.ok) throw new Error(String(res.status));
+    const data = await res.json();
+    return (data.incidents as IncidentRow[]).filter((r) => r.is_anomaly === 1);
+  } catch {
+    return [];
+  }
+}
+
+// Dashboard chat: talks to our own OpenAI-shaped endpoint, carrying the showcased
+// anomaly's bundle id so "this anomaly" resolves to what's on screen.
+export interface ChatTurn {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export async function sendChat(
+  messages: ChatTurn[],
+  bundleId: string | null,
+  sessionId: string,
+): Promise<string> {
+  const res = await fetch(`${API}/v1/chat/completions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Session-Id": sessionId },
+    body: JSON.stringify({ messages, bundle_id: bundleId }),
+  });
+  if (!res.ok) throw new Error(String(res.status));
+  const data = await res.json();
+  return data.choices?.[0]?.message?.content ?? "(no reply)";
+}
