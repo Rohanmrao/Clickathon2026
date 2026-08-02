@@ -37,6 +37,12 @@ LANGFUSE = {
     # container-internal host (langfuse-web:3000) can't be opened from the host browser — so
     # trace URLs are rewritten to this. Defaults to `host` (correct for a host venv run).
     "public_host": env("LANGFUSE_PUBLIC_HOST") or env("LANGFUSE_HOST", "http://localhost:3000"),
+    # Publish every investigation trace so its URL opens without a Langfuse login. The trace
+    # link is a scored deliverable ("no trace, no credit"), and a judge who has to sign up
+    # lands in their own empty org and sees "You do not have access to this trace" - which is
+    # exactly what happened. Off by default: publishing is irreversible and only appropriate
+    # for a demo dataset with no real customer data in it.
+    "publish_traces": env("LANGFUSE_PUBLISH_TRACES", "false").lower() in ("1", "true", "yes"),
 }
 
 # AWS Bedrock — auth comes from the standard AWS credential chain (aws cli / env / role),

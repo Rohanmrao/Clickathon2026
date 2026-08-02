@@ -18,12 +18,22 @@ dnf install -y docker git
 systemctl enable --now docker
 usermod -aG docker ec2-user
 
-# Compose v2 as a docker plugin (Amazon Linux 2023 has no compose package).
+# Compose v2 and buildx as docker plugins. Amazon Linux 2023 packages neither at a usable
+# version: it ships no compose at all, and a buildx old enough that current compose refuses to
+# build against it ("compose build requires buildx 0.17.0 or later"). Installing compose alone
+# gets you all the way to the final step and then fails, which is exactly what happened here.
 mkdir -p /usr/local/lib/docker/cli-plugins
 curl -sSL "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64" \
   -o /usr/local/lib/docker/cli-plugins/docker-compose
 chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+
+BUILDX=v0.36.0
+curl -fsSL "https://github.com/docker/buildx/releases/download/${BUILDX}/buildx-${BUILDX}.linux-amd64" \
+  -o /usr/local/lib/docker/cli-plugins/docker-buildx
+chmod +x /usr/local/lib/docker/cli-plugins/docker-buildx
+
 docker compose version
+docker buildx version
 
 echo "=== [2/5] source ==="
 git clone --depth 1 "$REPO" "$APP"
@@ -50,15 +60,23 @@ CLICKHOUSE_DATABASE=$(get clickhouse/database)
 LANGFUSE_PUBLIC_KEY=$(get langfuse/public_key)
 LANGFUSE_SECRET_KEY=$(get langfuse/secret_key)
 LANGFUSE_INIT_USER_PASSWORD=$(get langfuse/init_user_password)
-# Browser-facing: a judge clicking a trace link must reach this host, not localhost.
-LANGFUSE_HOST=http://${PUBLIC_IP}:3000
+# Two different addresses for the same service, deliberately:
+#   LANGFUSE_PUBLIC_HOST - what a BROWSER resolves. Compose defaults it to localhost, which is
+#                          right on a laptop and wrong on a server: every "Open trace" link a
+#                          judge clicks would point at their own machine.
+#   LANGFUSE_HOST        - container-to-container, set to the service name inside compose.
+LANGFUSE_PUBLIC_HOST=${LANGFUSE_PUBLIC_HOST:-http://${PUBLIC_IP}:3000}
 LANGFUSE_BASE_URL=http://${PUBLIC_IP}:3000
 
 # Bedrock auth comes from the instance profile - no keys anywhere on this box.
 AWS_REGION=$(get bedrock/region)
 BEDROCK_MODEL_ID=$(get bedrock/model_id)
 
+# Baked into the dashboard at BUILD time and resolved by the VIEWER's browser, so these must
+# be publicly reachable addresses. Left at the compose default of localhost, a judge opening the
+# dashboard gets "Backend unreachable" because their own machine has nothing on :8000.
 VITE_API_URL=http://${PUBLIC_IP}:8000
+VITE_LIBRECHAT_URL=http://${PUBLIC_IP}:3080
 EOF
 chown root:root "$APP/.env"; chmod 600 "$APP/.env"
 
