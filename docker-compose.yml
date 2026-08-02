@@ -54,6 +54,9 @@ services:
       # (deploy/bootstrap.sh does this automatically). Left as localhost on a server, every
       # "Open trace" link a judge clicks points at their own machine and dead-ends.
       LANGFUSE_PUBLIC_HOST: ${LANGFUSE_PUBLIC_HOST:-http://localhost:3000}
+      # Publish traces so their URLs open without a Langfuse login. Safe here (synthetic demo
+      # data); publishing is irreversible, so leave it off against anything real.
+      LANGFUSE_PUBLISH_TRACES: ${LANGFUSE_PUBLISH_TRACES:-false}
     depends_on:
       langfuse-web:
         condition: service_started

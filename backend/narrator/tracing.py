@@ -6,12 +6,15 @@ keys are unset so the pipeline still runs locally.
 """
 from __future__ import annotations
 
+import logging
 from contextlib import contextmanager
 from dataclasses import dataclass
 
 from config import LANGFUSE
 from config import config as _config
 from obs import langfuse
+
+log = logging.getLogger(__name__)
 
 
 def _browser_url(url: str | None) -> str | None:
@@ -76,10 +79,30 @@ def investigation_trace(
                 }
             )
             trace_id = lf.get_current_trace_id()
+            _publish(lf)
             try:
                 yield Trace(trace_id=trace_id, url=_browser_url(lf.get_trace_url(trace_id=trace_id)))
             finally:
                 lf.flush()
+
+
+def _publish(lf) -> None:
+    """Make the trace readable without a Langfuse login, when configured.
+
+    A trace URL is only worth putting in a submission if the person receiving it can open it.
+    Without this, a judge following the link is asked to sign in, signs up, lands in their own
+    empty organisation, and gets "You do not have access to this trace" - the evidence is there
+    and unreachable, which scores the same as not having it.
+
+    Publishing is irreversible per Langfuse, so it stays opt-in via LANGFUSE_PUBLISH_TRACES and
+    is only appropriate for a demo dataset. Never enable it against real customer data.
+    """
+    if not LANGFUSE.get("publish_traces"):
+        return
+    try:
+        lf.set_current_trace_as_public()
+    except Exception as exc:  # noqa: BLE001 - an unpublished trace is worse than a failed run
+        log.warning("Could not publish trace: %s", exc)
 
 
 @contextmanager
