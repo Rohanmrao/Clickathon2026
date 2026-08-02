@@ -111,4 +111,4 @@ def test_list_bundles_empty_is_not_an_error(client, monkeypatch):
     res = client.get("/bundles")
 
     assert res.status_code == 200
-    assert res.json() == {"count": 0, "investigations": []}
+    assert res.json() == {"count": 0, "investigations": [], "engine": "live"}

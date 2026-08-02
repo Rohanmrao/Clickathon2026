@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { getBundle, getHealth, investigate, listBundles, narrate } from "./api";
+import { getBundle, getHealth, investigate, listBundles, listIncidents, narrate, type IncidentRow } from "./api";
 import sampleBundle from "./sample_bundle.json";
 import { AnomalyCard } from "./components/AnomalyCard";
 import { DiagnosisCard } from "./components/DiagnosisCard";
@@ -13,8 +13,24 @@ import type { EvidenceBundle, InvestigationRow } from "./types";
 
 const METRICS = ["revenue", "fill_rate", "ecpm", "requests", "ctr", "rpr", "render_rate"];
 
+function incidentLabel(row: IncidentRow): string {
+  const date = row.window_start?.slice(5, 10) ?? "";
+  const pct = `${row.pct_delta < 0 ? "−" : "+"}${Math.abs(row.pct_delta * 100).toFixed(1)}%`;
+  let seg = "";
+  try {
+    const parsed = JSON.parse(row.localized_segment || "{}");
+    const vals = Object.values(parsed);
+    if (vals.length) seg = ` · ${vals.join(", ")}`;
+  } catch {
+    /* not JSON — leave the label unsegmented */
+  }
+  return `${row.metric} ${row.direction} ${pct} · ${date}${seg}`;
+}
+
 export default function App() {
   const [bundle, setBundle] = useState<EvidenceBundle>(sampleBundle as EvidenceBundle);
+  const [incidents, setIncidents] = useState<IncidentRow[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [source, setSource] = useState<"fixture" | "live">("fixture");
   const [engine, setEngine] = useState<"live" | "fixture" | "offline" | null>(null); // from /health
   const [running, setRunning] = useState(false);
@@ -44,12 +60,31 @@ export default function App() {
 
   const refreshHistory = () => listBundles(15).then(setHistory);
 
-  // On mount: report the real engine status and load past investigations.
+  // On mount: report the real engine status, load past investigations, and load the stored
+  // anomaly list — showcasing the biggest move first so the headline card is never a flat run.
   useEffect(() => {
     getHealth().then((h) => h && setEngine(h.engine));
     refreshHistory();
+    listIncidents().then((rows) => {
+      rows.sort((a, b) => Math.abs(b.pct_delta) - Math.abs(a.pct_delta));
+      setIncidents(rows);
+      if (rows.length) selectIncident(rows[0].investigation_id);
+    });
     return () => window.clearInterval(timer.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const selectIncident = (id: string) => {
+    setSelectedId(id);
+    getBundle(id).then((b) => {
+      if (b) {
+        setBundle(b);
+        setMetric(b.metric);
+        setSource("live");
+        setStep(99);
+      }
+    });
+  };
 
   // Reveal the drill-down one node at a time so the localization reads as a search, not a jump.
   const revealSteps = (b: EvidenceBundle) => {
@@ -77,6 +112,7 @@ export default function App() {
     const win = winStart && winEnd ? { start: `${winStart}T00:00:00`, end: `${winEnd}T00:00:00` } : undefined;
     const { bundle: b, live } = await investigate(metric, win);
     setBundle(b);
+    setSelectedId(b.investigation_id || null);
     setSource(live ? "live" : "fixture");
     revealSteps(b);
     if (live && b.investigation_id) {
@@ -85,6 +121,7 @@ export default function App() {
     }
     getHealth().then((h) => h && setEngine(h.engine)); // reflect offline/live after the run
     refreshHistory();
+    listIncidents().then(setIncidents); // a fresh detected anomaly joins the switcher too
   };
 
   // Re-open a stored investigation from the history list (already narrated, fully revealed).
@@ -93,6 +130,7 @@ export default function App() {
     if (b) {
       window.clearInterval(timer.current);
       setBundle(b);
+      setSelectedId(id);
       setMetric(b.metric);
       setSource("live");
       setRunning(false);
@@ -111,6 +149,7 @@ export default function App() {
       return "—";
     }
   };
+  const shortId = bundle.investigation_id ? bundle.investigation_id.slice(0, 8) : "inc_4471";
 
   return (
     <div className="app spacing-default effect-smooth">
@@ -120,11 +159,25 @@ export default function App() {
           <div className="brand-titles">
             <span className="brand-name">RCA analyst</span>
             <span className="brand-sub">
-              {source === "live" ? "live · /investigate" : "fixtures/sample_bundle.json"} · {bundle.investigation_id.slice(0, 8)}
+              {source === "live" ? "live · clickhouse bundles" : "fixtures/sample_bundle.json"} · {shortId}
             </span>
           </div>
         </div>
         <div className="topbar-actions">
+          {incidents.length > 0 && (
+            <select
+              className="ghost-btn incident-select"
+              value={selectedId ?? ""}
+              onChange={(e) => selectIncident(e.target.value)}
+              aria-label="Switch anomaly"
+            >
+              {incidents.map((row) => (
+                <option key={row.investigation_id} value={row.investigation_id}>
+                  {incidentLabel(row)}
+                </option>
+              ))}
+            </select>
+          )}
           <button
             className="ghost-btn icon-btn"
             onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
@@ -240,7 +293,7 @@ export default function App() {
             )}
           </section>
 
-          <SidebarDock history={history} onOpenRun={openRun} onRefresh={refreshHistory} segOf={segOf} />
+          <SidebarDock history={history} onOpenRun={openRun} onRefresh={refreshHistory} segOf={segOf} bundleId={selectedId} />
         </aside>
       </main>
     </div>

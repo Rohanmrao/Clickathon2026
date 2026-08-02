@@ -74,10 +74,17 @@ _BARE_MONTH = re.compile(
     r"\b(january|february|march|april|may|june|july|august|september|october|november|december"
     r"|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\b", re.I)
 
-Intent = Literal["scan", "investigate", "followup", "greeting"]
+Intent = Literal["scan", "investigate", "followup", "greeting", "replay"]
 _GREETINGS = {"hi", "hey", "hello", "yo", "thanks", "thank you", "ok", "okay"}
 _SCAN_HINTS = ("what's wrong", "whats wrong", "anything wrong", "any issues", "any incidents",
                "what happened", "show me incidents", "list incidents", "anomalies")
+# "replay this anomaly end to end", "walk me through the incident", "explain the investigation".
+# The demo flow: the dashboard shows an anomaly, the user asks the chat to replay it — the
+# answer is rebuilt from the stored bundle, so no re-detection runs and no number is invented.
+_REPLAY_HINTS = ("replay", "walk me through", "walk through", "end to end", "end-to-end",
+                 "explain the investigation", "explain this anomaly", "explain this incident",
+                 "explain the anomaly", "explain the incident", "how was this investigated",
+                 "how did the investigation")
 
 
 # ---- OpenAI wire types -----------------------------------------------------
@@ -95,6 +102,10 @@ class ChatCompletionRequest(BaseModel):
     stream: bool = False
     conversation_id: str | None = None
     user: str | None = None
+    # Dashboard extension: the anomaly currently showcased. When set, "this anomaly" questions
+    # (replay, follow-ups) resolve to THIS stored bundle instead of the latest one. OpenAI
+    # clients (LibreChat) simply never send it.
+    bundle_id: str | None = None
 
     def last_user_message(self) -> str:
         for message in reversed(self.messages):
@@ -208,6 +219,10 @@ def classify(request: ChatCompletionRequest, slots: Slots) -> Intent:
     message = request.last_user_message().lower().strip(" ?!.")
     if message in _GREETINGS:
         return "greeting"
+    # Replay outranks investigate: "replay the fill rate anomaly" names a metric, which would
+    # otherwise satisfy the investigate slots and trigger a fresh (redundant) detection run.
+    if any(hint in message for hint in _REPLAY_HINTS):
+        return "replay"
     if any(hint in message for hint in _SCAN_HINTS):
         return "scan"
     return "investigate" if slots.ready else "followup"

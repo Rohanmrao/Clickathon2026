@@ -1,7 +1,6 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { InvestigationRow } from "../types";
-
-const LIBRECHAT_URL = import.meta.env.VITE_LIBRECHAT_URL ?? "http://localhost:3080";
+import { sendChat, type ChatTurn } from "../api";
 
 const ChatIcon = (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -28,25 +27,53 @@ type Panel = "none" | "history" | "chat";
 
 // The sidebar's bottom dock: two compact buttons (Past investigations, Ask a follow-up)
 // each opening a panel anchored above them — the history unfolds like an envelope,
-// the assistant grows up into LibreChat. Only one panel is open at a time.
+// the assistant grows up into a built-in chat. Only one panel is open at a time.
+//
+// The chat talks to our own /v1/chat/completions rather than embedding LibreChat, because it
+// must carry `bundleId` — the anomaly currently showcased on the dashboard — with every
+// message, so "replay this anomaly end to end" and other under-specified questions resolve
+// against what's on screen instead of asking the user to restate it.
 export function SidebarDock({
   history,
   onOpenRun,
   onRefresh,
   segOf,
+  bundleId,
 }: {
   history: InvestigationRow[];
   onOpenRun: (id: string) => void;
   onRefresh: () => void;
   segOf: (row: InvestigationRow) => string;
+  bundleId: string | null;
 }) {
   const [open, setOpen] = useState<Panel>("none");
-  const [chatMounted, setChatMounted] = useState(false);
+  const [turns, setTurns] = useState<ChatTurn[]>([]);
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [sessionId] = useState(() => crypto.randomUUID());
+  const scroller = useRef<HTMLDivElement>(null);
 
   const toggle = (p: Panel) => setOpen((o) => (o === p ? "none" : p));
-  const openChat = () => {
-    setChatMounted(true);
-    toggle("chat");
+
+  useEffect(() => {
+    scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: "smooth" });
+  }, [turns, open]);
+
+  const send = async () => {
+    const text = draft.trim();
+    if (!text || busy) return;
+    const next: ChatTurn[] = [...turns, { role: "user", content: text }];
+    setTurns(next);
+    setDraft("");
+    setBusy(true);
+    try {
+      const reply = await sendChat(next, bundleId, sessionId);
+      setTurns([...next, { role: "assistant", content: reply }]);
+    } catch {
+      setTurns([...next, { role: "assistant", content: "Backend unreachable — is :8000 up?" }]);
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -79,20 +106,45 @@ export function SidebarDock({
         </div>
       </div>
 
-      {/* Ask a follow-up — LibreChat */}
+      {/* Ask a follow-up — built-in chat, bundle-aware */}
       <div className={`dock-panel assistant-pop ${open === "chat" ? "open" : ""}`} role="dialog" aria-label="RCA Assistant" aria-hidden={open !== "chat"}>
         <div className="assistant-pop-head">
           <div className="ap-title">
             <span className="ap-avatar">{ChatIcon}</span>
             <span className="ap-titles">
               <span className="ap-name">RCA Assistant</span>
-              <span className="ap-status"><span className="ap-live" /> Online · ask about any metric</span>
+              <span className="ap-status">
+                <span className="ap-live" />
+                {bundleId ? ` Context: ${bundleId.slice(0, 8)}` : " Online · ask about any metric"}
+              </span>
             </span>
           </div>
           <button className="ap-close" onClick={() => setOpen("none")} aria-label="Close assistant">{CloseIcon}</button>
         </div>
-        <div className="assistant-pop-body">
-          {chatMounted && <iframe className="assistant-frame" src={LIBRECHAT_URL} title="RCA Assistant" allow="clipboard-write" />}
+        <div className="assistant-pop-body chat-body" ref={scroller}>
+          {turns.length === 0 && (
+            <div className="chat-msg assistant">
+              Ask me to <em>replay this anomaly incident end to end</em>, or anything about the
+              investigation on screen.
+            </div>
+          )}
+          {turns.map((t, i) => (
+            <div key={i} className={`chat-msg ${t.role}`}>
+              <pre className="chat-text">{t.content}</pre>
+            </div>
+          ))}
+          {busy && <div className="chat-msg assistant">…</div>}
+        </div>
+        <div className="chat-input-row">
+          <input
+            className="chat-input"
+            value={draft}
+            placeholder="Replay this anomaly end to end…"
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && send()}
+            disabled={busy}
+          />
+          <button className="primary-btn" onClick={send} disabled={busy || !draft.trim()}>Send</button>
         </div>
       </div>
 
@@ -108,7 +160,7 @@ export function SidebarDock({
         </button>
         <button
           className={`dock-btn chat-btn ${open === "chat" ? "is-open" : ""}`}
-          onClick={openChat}
+          onClick={() => toggle("chat")}
           aria-expanded={open === "chat"}
         >
           <span className="db-icon">{ChatIcon}</span>

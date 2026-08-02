@@ -784,6 +784,66 @@ body {
 .assistant-pop-body { flex: 1; min-height: 0; background: var(--bg-surface); }
 .assistant-frame { width: 100%; height: 100%; border: 0; }
 
+/* ---------- built-in bundle chat ---------- */
+.chat-body {
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--group-gap-l);
+  padding: var(--all-padding-s);
+}
+.chat-msg {
+  max-width: 92%;
+  padding: var(--all-padding-xs) var(--all-padding-s);
+  border-radius: var(--all-radius-s);
+  font-size: var(--font-size-caption-1);
+  line-height: 1.45;
+}
+.chat-msg.user {
+  align-self: flex-end;
+  background: var(--content-secondary-dark);
+  color: var(--bg-canvas);
+}
+.chat-msg.assistant {
+  align-self: flex-start;
+  background: var(--bg-elevated);
+  border: var(--hairline) solid var(--border-neutral-default);
+  color: var(--content-primary);
+}
+.chat-text {
+  margin: 0;
+  font: inherit;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.chat-input-row {
+  flex: none;
+  display: flex;
+  gap: var(--group-gap-l);
+  padding: var(--all-padding-s);
+  border-top: var(--hairline) solid var(--border-neutral-default);
+  background: var(--bg-elevated);
+}
+.chat-input {
+  flex: 1;
+  min-width: 0;
+  padding: var(--all-padding-xs) var(--all-padding-s);
+  border: var(--hairline) solid var(--border-neutral-default);
+  border-radius: var(--all-radius-s);
+  background: var(--bg-surface);
+  color: var(--content-primary);
+  font-size: var(--font-size-caption-1);
+}
+.chat-input:focus { outline: none; border-color: var(--content-secondary-main); }
+
+/* anomaly switcher in the topbar */
+.incident-select {
+  max-width: var(--base-348);
+  cursor: pointer;
+  background: var(--bg-elevated);
+  color: var(--content-primary);
+}
+
 /* ---------- animations ---------- */
 @keyframes pulseRing {
   0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--content-negative-dark) 45%, transparent); }
