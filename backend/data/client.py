@@ -21,6 +21,14 @@ def get_client():
     clickhouse-connect clients hold an internal (thread-safe) connection pool, so reusing a single
     client avoids a fresh TLS handshake per query — the dominant cost when firing many small queries
     (e.g. the benchmarker). Call get_client.cache_clear() to force a reconnect.
+
+    autogenerate_session_id=False is what makes that sharing safe. The connection POOL is
+    thread-safe, but the driver binds every query to one generated session_id, and ClickHouse
+    rejects concurrent queries within a single session — "Attempt to execute concurrent queries
+    within the same session". That surfaced the moment the streaming job ran queries from its
+    background thread while the dashboard polled /stream/status and /dashboard from request
+    threads, killing the stream two batches in. Nothing here needs session state (no temporary
+    tables, no session-scoped settings), so not binding one is the fix rather than a workaround.
     """
     return clickhouse_connect.get_client(
         host=CLICKHOUSE["host"],
@@ -29,6 +37,7 @@ def get_client():
         password=CLICKHOUSE["password"],
         database=CLICKHOUSE["database"],
         secure=True,
+        autogenerate_session_id=False,
     )
 
 
