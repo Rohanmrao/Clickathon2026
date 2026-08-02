@@ -270,3 +270,20 @@ export async function getStreamStatus(): Promise<StreamStatus | null> {
     return null;
   }
 }
+
+// Which table set investigations point at. Surfaced because it is otherwise invisible: a sweep
+// over the streamed range silently returned nothing when the target had reverted to dev.
+export interface DatasetMode { target: string; history: string; }
+
+export async function setDataset(target: string): Promise<DatasetMode | null> {
+  try {
+    const res = await fetch(`${API}/dataset`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target }),
+    });
+    return res.ok ? ((await res.json()) as DatasetMode) : null;
+  } catch {
+    return null;
+  }
+}

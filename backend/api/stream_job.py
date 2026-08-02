@@ -108,7 +108,7 @@ def _investigate(metric: str, start: datetime, end: datetime, method: str, sessi
         return None
 
 
-def _run(cfg: dict, previous_dataset: str | None) -> None:
+def _run(cfg: dict) -> None:
     session = f"stream-{datetime.now():%Y%m%d-%H%M%S}"
     skip = set() if cfg.get("reanalyze") else stream.analyzed_hours()
     try:
@@ -149,10 +149,11 @@ def _run(cfg: dict, previous_dataset: str | None) -> None:
             _state["analysis"] = stream.analysis_summary()
             _state["status"] = "stopped" if _stop.is_set() else ("error" if _state.get("error") else "done")
             _state["finished_at"] = datetime.now().isoformat(timespec="seconds")
-            if previous_dataset is None:
-                os.environ.pop(_DATASET_ENV, None)
-            else:
-                os.environ[_DATASET_ENV] = previous_dataset
+            # Deliberately NOT reverting the dataset. Reverting on stop meant that the moment a
+            # replay finished, every sweep and investigation silently went back to the dev
+            # tables — so "Find anomalies" over the streamed range returned 0 findings because
+            # dev holds no rows after Jul 5. The streamed slice is what the user is looking at;
+            # it stays selected until they switch it back via POST /dataset.
 
 
 def start(overrides: dict | None = None, reset: bool = True) -> dict:
@@ -164,7 +165,6 @@ def start(overrides: dict | None = None, reset: bool = True) -> dict:
             raise ValueError("a stream is already running; stop it first")
 
     cfg = {**config()["stream"], **(overrides or {})}
-    previous_dataset = os.environ.get(_DATASET_ENV)
 
     if reset:
         stream.prepare()
@@ -181,7 +181,7 @@ def start(overrides: dict | None = None, reset: bool = True) -> dict:
         _state.clear()
         _state.update(_fresh_state(total, cfg))
 
-    _thread = threading.Thread(target=_run, args=(cfg, previous_dataset), daemon=True)
+    _thread = threading.Thread(target=_run, args=(cfg,), daemon=True)
     _thread.start()
     return status()
 

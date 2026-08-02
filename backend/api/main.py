@@ -13,6 +13,7 @@ Endpoint surface (docs/superpowers/specs/2026-08-01-rca-api-design.md):
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from datetime import datetime
 
@@ -23,7 +24,7 @@ from pydantic import BaseModel
 
 from api import chat as chatlib
 from api import dev, pipeline, stream_job
-from config import LANGFUSE
+from config import LANGFUSE, config, dataset_name
 from data import store
 from data.client import clickhouse_available
 from models import EvidenceBundle, Window
@@ -55,11 +56,34 @@ def health() -> dict:
     return {
         "ok": True,
         "engine": pipeline.engine_mode(),            # live | fixture | offline
+        # Which tables everything is pointed at. Reported because it is invisible otherwise:
+        # a sweep over the streamed range returned 0 findings purely because the target had
+        # reverted to dev, and nothing on screen said so.
+        "dataset": {"target": dataset_name("target"), "history": dataset_name("history")},
         "langfuse": {
             "enabled": bool(LANGFUSE["public_key"]),
             "host": LANGFUSE["host"],
         },
     }
+
+
+class DatasetRequest(BaseModel):
+    target: str
+
+
+@app.post("/dataset")
+def set_dataset(req: DatasetRequest) -> dict:
+    """Point investigations at a dataset: 'dev' (Jun 1-Jul 5) or 'unseen' (the streamed slice).
+
+    History deliberately stays where it is — baselines need the five weeks of dev data whichever
+    slice is under investigation.
+    """
+    if req.target not in config()["datasets"]:
+        raise HTTPException(status_code=400,
+                            detail=f"unknown dataset {req.target!r}; expected one of "
+                                   f"{list(config()['datasets'])}")
+    os.environ["RCA_DATASET"] = req.target
+    return {"target": dataset_name("target"), "history": dataset_name("history")}
 
 
 @app.post("/investigate", response_model=EvidenceBundle)

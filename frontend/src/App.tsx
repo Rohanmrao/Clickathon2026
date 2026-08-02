@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { getBundle, getHealth, getStreamStatus, getTrace, investigate, listBundles, listIncidents,
-         narrate, startStream, stopStream, type IncidentRow, type StreamStatus } from "./api";
+         narrate, setDataset, startStream, stopStream, type IncidentRow, type StreamStatus } from "./api";
 import sampleBundle from "./sample_bundle.json";
 import { AnomalyCard } from "./components/AnomalyCard";
 import { DiagnosisCard } from "./components/DiagnosisCard";
@@ -57,6 +57,7 @@ export default function App() {
   const [traceOpen, setTraceOpen] = useState(false);
   const [sweepOpen, setSweepOpen] = useState(false);
   const [stream, setStream] = useState<StreamStatus | null>(null);
+  const [dataset, setDatasetState] = useState<string | null>(null);
   const streamPoll = useRef<number | undefined>(undefined);
   const timer = useRef<number | undefined>(undefined);
 
@@ -78,7 +79,7 @@ export default function App() {
   // On mount: report the real engine status, load past investigations, and load the stored
   // anomaly list — showcasing the biggest move first so the headline card is never a flat run.
   useEffect(() => {
-    getHealth().then((h) => h && setEngine(h.engine));
+    getHealth().then((h) => { if (h) { setEngine(h.engine); setDatasetState(h.dataset?.target ?? null); } });
     refreshHistory();
     listIncidents().then((rows) => {
       rows.sort((a, b) => Math.abs(b.pct_delta) - Math.abs(a.pct_delta));
@@ -89,7 +90,7 @@ export default function App() {
     // single cold/slow probe used to latch the "offline" banner until the next investigation,
     // long after the database was healthy again.
     const health = window.setInterval(
-      () => getHealth().then((h) => h && setEngine(h.engine)),
+      () => getHealth().then((h) => { if (h) { setEngine(h.engine); setDatasetState(h.dataset?.target ?? null); } }),
       HEALTH_POLL_MS,
     );
     // Pick up a replay already in flight (e.g. after a page refresh mid-stream).
@@ -128,6 +129,17 @@ export default function App() {
     setStream(s);
     setIncidents([]);                       // the old feed describes data that was just truncated
     beginPolling();
+  };
+
+  // The dataset is what everything queries, so it must be visible and switchable. A silent
+  // revert to dev after a stream made "Find anomalies" return 0 over the streamed range.
+  const onSwitchDataset = async (target: string) => {
+    const d = await setDataset(target);
+    if (d) {
+      setDatasetState(d.target);
+      listIncidents().then(setIncidents);
+      refreshHistory();
+    }
   };
 
   const onStopStream = async () => {
@@ -190,7 +202,7 @@ export default function App() {
       const id = b.investigation_id;
       window.setTimeout(() => void getTrace(id), TRACE_SNAPSHOT_DELAY_MS);
     }
-    getHealth().then((h) => h && setEngine(h.engine)); // reflect offline/live after the run
+    getHealth().then((h) => { if (h) { setEngine(h.engine); setDatasetState(h.dataset?.target ?? null); } });
     refreshHistory();
     listIncidents().then(setIncidents); // a fresh detected anomaly joins the switcher too
   };
@@ -266,6 +278,15 @@ export default function App() {
             )}
           </button>
           <span className="status-pill"><span className="live-dot" /> {engineLabel}</span>
+          {dataset && (
+            <button
+              className={`ghost-btn dataset-pill ${dataset === "unseen" ? "is-unseen" : ""}`}
+              onClick={() => onSwitchDataset(dataset === "unseen" ? "dev" : "unseen")}
+              title="Which table set investigations query. Click to switch."
+            >
+              data · {dataset}
+            </button>
+          )}
           <div className="controls">
             <select value={metric} onChange={(e) => setMetric(e.target.value)} aria-label="Metric">
               {METRICS.map((m) => <option key={m} value={m}>{m}</option>)}

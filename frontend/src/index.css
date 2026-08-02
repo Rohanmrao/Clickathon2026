@@ -1390,3 +1390,12 @@ body {
 .sb-hit .is-drop { color: var(--content-negative-main); font-weight: 700; }
 .sb-hit .is-spike { color: var(--content-positive-main); font-weight: 700; }
 .sb-hit-hour { color: var(--content-display-text-caption-dimmed); }
+
+/* Which dataset everything queries — a hidden variable until it caused a silent empty sweep. */
+.dataset-pill { font-family: var(--font-family-mono); font-size: var(--font-size-caption-2); }
+.dataset-pill.is-unseen {
+  border-color: var(--border-secondary-default);
+  background: var(--bg-secondary-bright-default);
+  color: var(--content-display-text-title-main);
+  font-weight: 700;
+}
