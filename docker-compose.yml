@@ -130,7 +130,10 @@ services:
       - "3000:3000"
     environment:
       <<: *langfuse-infra
-      NEXTAUTH_URL: http://localhost:3000
+      # Langfuse builds every auth redirect from this, so it must be the address the BROWSER
+      # uses. Hardcoded to localhost, signing in on a deployed host bounces the user to their
+      # own machine and the login silently fails. Defaults to localhost for laptop runs.
+      NEXTAUTH_URL: ${LANGFUSE_PUBLIC_HOST:-http://localhost:3000}
       NEXTAUTH_SECRET: dev-langfuse-nextauth-secret-change-me
       LANGFUSE_INIT_ORG_ID: clickathon
       LANGFUSE_INIT_ORG_NAME: JalagaaraGang
