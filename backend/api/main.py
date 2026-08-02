@@ -7,6 +7,15 @@ Endpoint surface (docs/superpowers/specs/2026-08-01-rca-api-design.md):
     GET  /bundles                   investigation history
     POST /investigate               run the pipeline (still fixture-backed)
     POST /v1/chat/completions       conversational entry point; LibreChat points here
+"""Lane C: FastAPI orchestration.
+
+Endpoint surface (docs/superpowers/specs/2026-08-01-rca-api-design.md):
+
+    GET  /health                    liveness
+    GET  /bundle/{id}               retrieve a stored Evidence Bundle
+    GET  /bundles                   investigation history
+    POST /investigate               run the pipeline (still fixture-backed)
+    POST /v1/chat/completions       conversational entry point; LibreChat points here
 
   uvicorn api.main:app --reload --port 8000
 """
@@ -17,10 +26,17 @@ import uuid
 from datetime import datetime
 
 from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from api import chat as chatlib
+from api import dev, pipeline
+from config import LANGFUSE
+from data import store
+from data.client import clickhouse_available
 from api import chat as chatlib
 from api import dev, pipeline
 from config import LANGFUSE
@@ -38,6 +54,10 @@ app.add_middleware(
 if dev.dev_enabled():
     app.include_router(dev.router)
 
+# Dev/admin dashboard at /dev — local only, gated by env (default on). Never enable on a public deploy.
+if dev.dev_enabled():
+    app.include_router(dev.router)
+
 
 class InvestigateRequest(BaseModel):
     metric: str = "revenue"
@@ -46,6 +66,20 @@ class InvestigateRequest(BaseModel):
 
 @app.get("/health")
 def health() -> dict:
+    """Wiring dashboard, not just liveness.
+
+    Judges run this stack locally, where the failure modes are silent: a fresh Langfuse has no
+    API keys and tracing quietly no-ops, and the RCA engine may still be stubbed. Reporting
+    both here means a judge sees what is actually live before drawing conclusions from it.
+    """
+    return {
+        "ok": True,
+        "engine": pipeline.engine_mode(),            # live | fixture | offline
+        "langfuse": {
+            "enabled": bool(LANGFUSE["public_key"]),
+            "host": LANGFUSE["host"],
+        },
+    }
     """Wiring dashboard, not just liveness.
 
     Judges run this stack locally, where the failure modes are silent: a fresh Langfuse has no
