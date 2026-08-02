@@ -66,6 +66,22 @@ def build_bundle(metric: str, target: Window | None = None) -> EvidenceBundle:
         p.verdict(localized_segment=localized, depth=len(path),
                   culprit_contribution_pct=path[-1].contribution_pct if path else None)
 
+    # A correctly localized culprit is real evidence on its own, even when the POPULATION-level
+    # scan (scan_incidents, which detect's `anomaly.detected` came from above) missed it — the
+    # exact dilution drilldown.py's own materiality-gate comment describes: fill_rate is only
+    # -1.1% globally but -51% inside APAC/iOS 18.1, so the calibrated population-level EFFECT
+    # floor never clears even though the segment is genuinely severe.
+    #
+    # `path` alone is NOT a strong enough gate by itself, though — measured directly: it upgraded
+    # a revenue window with z=-0.75 (ordinary noise) to "detected", because drill()'s per-level
+    # contribution/lift thresholds can still be cleared by SOME segment even when the underlying
+    # global move is statistically insignificant (enough dimensions, one will look disproportionate
+    # by chance). Requiring |z| >= the same mad_z_threshold everything else uses is what separates
+    # "genuinely surprising globally, just diluted by averaging" (Case D: z=-19, correctly upgrades)
+    # from "unremarkable move, drill found a segment anyway" (z=-0.75, correctly does not).
+    if path and not anomaly.detected and abs(anomaly.score) >= _DET["mad_z_threshold"]:
+        anomaly = anomaly.model_copy(update={"detected": True})
+
     with phase("ruled-out") as p:
         ruled = _ruled_out(factors, q_decomp[0]["id"])
         p.verdict(cleared={r.hypothesis: r.evidence for r in ruled})

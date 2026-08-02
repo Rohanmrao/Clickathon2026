@@ -69,3 +69,31 @@ def test_revenue_bundle_detects_and_names_primary_factor():
     jsonschema.validate(b.model_dump(mode="json", by_alias=True, exclude_none=True), SCHEMA)
     assert b.anomaly.detected is True                     # revenue collapsed on Jun 21
     assert b.factor_decomposition.primary_factor == "requests"
+
+
+def test_severe_but_globally_diluted_case_still_reports_detected():
+    """Case D: fill_rate is only -1.1% at POPULATION level (below the calibrated 2.8% floor
+    scan_incidents' day-grain scan gates on) but -51% inside APAC/iOS 18.1 — exactly the
+    dilution drilldown.py's own materiality-gate comment describes. The drill-down already
+    finds and localizes this correctly; before this fix, anomaly.detected stayed False anyway
+    because it was decided ONLY from the population-level scan, never revisited after drilling
+    found a real, gate-cleared culprit.
+    """
+    window = Window(start=datetime(2026, 6, 28), end=datetime(2026, 7, 1))
+    b = bundle.build_bundle("fill_rate", window)
+    jsonschema.validate(b.model_dump(mode="json", by_alias=True, exclude_none=True), SCHEMA)
+    assert b.localized_segment == {"region": "APAC", "os_version": "iOS 18.1"}
+    assert b.anomaly.detected is True                      # drill's own finding upgrades it
+
+
+def test_ordinary_noise_is_not_upgraded_just_because_drill_finds_a_segment():
+    """Regression: the first version of the fix above upgraded ANY non-empty drill path to
+    detected=True, which flipped a genuinely unremarkable revenue hour (z=-0.75, deep inside
+    normal noise) to "detected" purely because drill's per-level contribution/lift gate can
+    still be cleared by some segment even when the underlying move means nothing. The z-score
+    itself must also clear mad_z_threshold, same as everywhere else, before a drill finding is
+    trusted as real evidence."""
+    window = Window(start=datetime(2026, 6, 23, 12), end=datetime(2026, 6, 23, 13))
+    b = bundle.build_bundle("revenue", window)
+    assert abs(b.anomaly.score) < 3.5                       # ordinary noise, confirmed
+    assert b.anomaly.detected is False
