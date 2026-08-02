@@ -83,3 +83,30 @@ def test_phase_noop_without_active_trace(monkeypatch):
         p.verdict(anything=1)
     assert p.enabled is False
     assert lf.events == []  # no orphan span created
+
+
+def test_stamp_trace_verdict_sets_output_and_score(fake_lf):
+    calls = {}
+    fake_lf.set_current_trace_io = lambda **kw: calls.setdefault("io", kw)
+    fake_lf.score_current_trace = lambda **kw: calls.setdefault("score", kw)
+
+    class B:  # duck-typed bundle
+        class anomaly:
+            detected, score, pct_delta = True, -4.2, -0.1
+
+        class factor_decomposition:
+            primary_factor = "fill_rate"
+
+        localized_segment = {"country": "IN"}
+        metric = "revenue"
+
+    tracing.stamp_trace_verdict(B)
+
+    assert calls["io"]["output"]["primary_factor"] == "fill_rate"
+    assert calls["io"]["output"]["localized_segment"] == {"country": "IN"}
+    assert calls["score"] == {"name": "anomaly_score", "value": -4.2, "data_type": "NUMERIC"}
+
+
+def test_score_trace_noop_without_langfuse(monkeypatch):
+    monkeypatch.setattr(tracing, "langfuse", lambda: None)
+    tracing.score_trace("guardrail_passed", 1, "BOOLEAN")  # must not raise

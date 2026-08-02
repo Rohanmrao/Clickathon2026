@@ -63,7 +63,8 @@ def investigation_trace(
     from langfuse import propagate_attributes
 
     session_id = session_id or investigation_id
-    with propagate_attributes(session_id=session_id, trace_name=f"investigation:{metric}"):
+    with propagate_attributes(session_id=session_id, trace_name=f"investigation:{metric}",
+                              tags=[metric]):
         with lf.start_as_current_observation(
             name=f"investigation:{metric}", as_type="span"
         ) as root:
@@ -166,3 +167,27 @@ def phase(name: str, input: dict | None = None):
     finally:
         if _TRACING["live_flush"]:
             lf.flush()
+
+
+def score_trace(name: str, value, data_type: str) -> None:
+    """Attach a Langfuse score to the current trace — shows as a trace-list column."""
+    lf = langfuse()
+    if lf is None or lf.get_current_trace_id() is None:
+        return
+    lf.score_current_trace(name=name, value=value, data_type=data_type)
+
+
+def stamp_trace_verdict(bundle) -> None:
+    """Write the investigation's conclusion onto the root trace, so the judge sees the verdict
+    in the trace LIST before opening anything."""
+    lf = langfuse()
+    if lf is None or lf.get_current_trace_id() is None:
+        return
+    lf.set_current_trace_io(output={
+        "detected": bundle.anomaly.detected,
+        "primary_factor": bundle.factor_decomposition.primary_factor,
+        "localized_segment": bundle.localized_segment,
+        "score": bundle.anomaly.score,
+        "pct_delta": bundle.anomaly.pct_delta,
+    })
+    score_trace("anomaly_score", bundle.anomaly.score, "NUMERIC")

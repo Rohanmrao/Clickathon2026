@@ -24,7 +24,7 @@ from pathlib import Path
 
 from data import store
 from models import EvidenceBundle, Window
-from narrator.tracing import investigation_trace, narration_span
+from narrator.tracing import investigation_trace, narration_span, score_trace, stamp_trace_verdict
 
 log = logging.getLogger(__name__)
 
@@ -124,6 +124,7 @@ def run_investigation(
 
         bundle.created_at = datetime.now()
         bundle.trace_url = trace.url
+        stamp_trace_verdict(bundle)
         # Only persist when the datastore is reachable; an offline run is in-memory only.
         if data_up:
             store.save_bundle(bundle, trace_id=trace.trace_id, session_id=session_id)
@@ -281,6 +282,9 @@ def narrate_investigation(investigation_id: str) -> EvidenceBundle | None:
                         if verification else [],
                     },
                 )
+            verification = bundle.narrative_verification
+            score_trace("guardrail_passed", 1 if (verification and verification.passed) else 0,
+                        "BOOLEAN")
             if bundle.narrative_verification and not bundle.narrative_verification.passed:
                 log.warning(
                     "Guardrail FAILED for %s - numbers not in bundle: %s",
