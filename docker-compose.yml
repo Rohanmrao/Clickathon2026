@@ -49,7 +49,11 @@ services:
       # SDK ingests to the internal service name; trace LINKS use the browser-facing host, since
       # the host browser can't resolve langfuse-web. Without the split, "Open trace" dead-links.
       LANGFUSE_HOST: http://langfuse-web:3000
-      LANGFUSE_PUBLIC_HOST: http://localhost:3000
+      # Browser-facing, so it must be an address the VIEWER can resolve. Defaults to localhost
+      # for laptop runs; a deployed host sets LANGFUSE_PUBLIC_HOST to its own public address
+      # (deploy/bootstrap.sh does this automatically). Left as localhost on a server, every
+      # "Open trace" link a judge clicks points at their own machine and dead-ends.
+      LANGFUSE_PUBLIC_HOST: ${LANGFUSE_PUBLIC_HOST:-http://localhost:3000}
     depends_on:
       langfuse-web:
         condition: service_started
