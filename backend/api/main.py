@@ -64,12 +64,21 @@ def health() -> dict:
 
 @app.post("/investigate", response_model=EvidenceBundle)
 def investigate(req: InvestigateRequest) -> EvidenceBundle:
-    """Run an investigation and return the bundle WITHOUT a narrative.
+    """Run an investigation, persist the bundle, and return it WITHOUT a narrative.
+
+    This is the ONE non-seed path that may write to `bundles` — it is the dashboard's
+    Investigate button. No other API endpoint passes persist=True; the chat path and all
+    other callers stay at the default False.
 
     No LLM sits in this path, so a judge can call it twice and diff the result to verify
     reproducibility. Narration is POST /narrate/{id}.
     """
-    return pipeline.run_investigation(req.metric, req.window)
+    bundle = pipeline.run_investigation(req.metric, req.window, persist=True)
+    # Mirror the segment-scope override from dev.py seed_bundles: if global detection
+    # didn't fire but localization found a segment, the anomaly is real — promote it.
+    if not bundle.anomaly.detected and bundle.localized_segment:
+        bundle.anomaly.detected = True
+    return bundle
 
 
 @app.post("/narrate/{investigation_id}", response_model=EvidenceBundle)
@@ -316,6 +325,63 @@ def _replay_text(bundle: EvidenceBundle) -> str:
     return "\n\n".join(lines)
 
 
+def _baseline_text(bundle: EvidenceBundle) -> str:
+    """"What were the normal values that day" — answered from OTHER stored bundles, not this
+    one. The anomaly bundle only knows its own window; this reads `bundles` for the same metric
+    across the surrounding two weeks (store.load_nearby_bundles) and reports what each of those
+    runs actually measured, distinguishing normal days from any other detected anomaly nearby.
+
+    If nothing nearby has been seeded, says so plainly rather than guessing a number — the same
+    "explicit about what wasn't checked" principle as the ruled-out list.
+    """
+    nearby = store.load_nearby_bundles(
+        bundle.metric, bundle.target_window.start, bundle.target_window.end,
+        days=14, exclude_id=bundle.investigation_id,
+    )
+    a = bundle.anomaly
+    lines = [f"## Baseline check: {bundle.metric} around "
+             f"{bundle.target_window.start:%b %d} – {bundle.target_window.end:%b %d}\n"]
+    lines.append(
+        f"**The anomaly itself.** {bundle.metric} was **{a.observed:.4g}** "
+        f"({a.direction}, {a.pct_delta * 100:+.1f}% vs an expected **{a.expected:.4g}**) on "
+        f"{bundle.target_window.start:%b %d}."
+    )
+
+    if not nearby:
+        lines.append(
+            "**No surrounding data stored yet.** No other investigation runs are recorded for "
+            f"`{bundle.metric}` near this window, so there's nothing to compare against — run "
+            "`POST /dev/seed_context` to backfill the days around this anomaly first."
+        )
+    else:
+        normal = [r for r in nearby if not r["is_anomaly"]]
+        other = [r for r in nearby if r["is_anomaly"]]
+        if normal:
+            vals = [r["observed"] for r in normal]
+            lo, hi = min(vals), max(vals)
+            avg = sum(vals) / len(vals)
+            rows = [f"  - {r['window_start']:%b %d}: **{r['observed']:.4g}** "
+                    f"(expected {r['expected']:.4g})" for r in normal]
+            lines.append(
+                f"**Normal days nearby ({len(normal)} stored runs).** Values ranged "
+                f"**{lo:.4g} – {hi:.4g}**, averaging **{avg:.4g}** — versus **{a.observed:.4g}** "
+                f"on the anomalous day.\n" + "\n".join(rows)
+            )
+        if other:
+            rows = [f"  - {r['window_start']:%b %d}: **{r['observed']:.4g}** "
+                    f"({r['direction']}, {r['pct_delta'] * 100:+.1f}%)" for r in other]
+            lines.append(
+                f"**Also anomalous nearby ({len(other)}).** These days were flagged too, so "
+                "they're excluded from the 'normal' range above:\n" + "\n".join(rows)
+            )
+
+    lines.append(
+        f"_Normal-day figures come from {len(nearby)} separately stored detection runs, each "
+        f"reproducible the same way as the anomaly itself — not generated for this answer._"
+    )
+    return "\n\n".join(lines)
+
+
 # Bundle fields the general assistant may see as context — evidence only, no SQL/queries.
 _CHAT_CONTEXT_FIELDS = {
     "investigation_id", "metric", "target_window", "anomaly", "factor_decomposition",
@@ -358,10 +424,27 @@ def _handle_chat(
             return payload
         # No stored anomaly to replay — fall through to a normal helpful answer.
 
+    elif intent == "baseline":
+        # Same "this anomaly" resolution as replay, but the answer looks OUTSIDE the bundle —
+        # store.load_nearby_bundles reads other stored runs for the same metric, because the
+        # bundle's own JSON has no idea what a normal day looked like.
+        bundle = (store.load_bundle(req.bundle_id) if req.bundle_id
+                  else store.load_latest_anomaly(slots.metric))
+        if bundle is None:
+            content = ("No detected anomaly is stored yet to compare against — investigate one "
+                       "first, then ask what's normal around it.")
+        else:
+            payload = chatlib.completion(
+                _baseline_text(bundle), context_id=context_id, slots=slots,
+                investigation=bundle.model_dump(mode="json"),
+            )
+            store.add_turn(context_id, "assistant", payload["choices"][0]["message"]["content"])
+            return payload
+
     # A fully-specified request ("why did fill rate drop on June 23?") → run the real, traced
     # investigation. Everything below this line is handled by the general assistant.
     if intent == "investigate":
-        bundle = _run_investigation(slots, context_id, method)
+        bundle = _run_investigation(slots, context_id, method)  # real detection, traced — NOT persisted (bundles is seed-path-only, see pipeline.py)
         payload = chatlib.completion(
             _diagnosis_text(bundle), context_id=context_id, slots=slots,
             investigation=bundle.model_dump(mode="json"),

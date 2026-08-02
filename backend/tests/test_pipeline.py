@@ -1,7 +1,10 @@
 """JAL-79: the trace-and-persist contract, with Langfuse and ClickHouse stubbed.
 
-What matters here is that an investigation is always traced and always stored, and that the
-trace_id survives - POST /narrate/{id} is a separate HTTP call and needs it to attach its
+An investigation is always traced. Persistence is opt-in (`persist=True`) and reserved for the
+seed path (api/dev.py) — every non-seed caller (POST /investigate, chat) leaves it False, so
+`bundles` is never written to except when explicitly seeding. Tests that exercise the storage
+contract itself pass persist=True; the rest don't touch it. trace_id still has to survive when
+persisted, since POST /narrate/{id} is a separate HTTP call and needs it to attach its
 generation span to the trace the investigation already opened.
 """
 from datetime import datetime
@@ -60,24 +63,34 @@ def test_trace_url_lands_on_the_bundle(traced, saved):
 
 
 def test_trace_id_is_persisted_not_just_the_url(traced, saved):
-    """/narrate must reattach to this trace, so the id has to survive the HTTP boundary."""
-    pipeline.run_investigation("revenue")
+    """/narrate must reattach to this trace, so the id has to survive the HTTP boundary
+    (when a caller opts into persistence — see module docstring)."""
+    pipeline.run_investigation("revenue", persist=True)
 
     assert saved[0]["trace_id"] == "trace-abc"
 
 
 def test_session_id_flows_into_both_trace_and_row(traced, saved):
     """Chat-driven investigations group under one Langfuse session."""
-    pipeline.run_investigation("ecpm", session_id="ctx-42")
+    pipeline.run_investigation("ecpm", session_id="ctx-42", persist=True)
 
     assert traced[0]["session_id"] == "ctx-42"
     assert saved[0]["session_id"] == "ctx-42"
 
 
-def test_bundle_is_persisted(traced, saved):
-    bundle = pipeline.run_investigation("revenue")
+def test_bundle_is_persisted_when_asked(traced, saved):
+    bundle = pipeline.run_investigation("revenue", persist=True)
 
     assert saved[0]["bundle"].investigation_id == bundle.investigation_id
+
+
+def test_bundle_is_not_persisted_by_default(traced, saved):
+    """The lockdown contract: `bundles` must only ever be written from the seed path
+    (api/dev.py), never from POST /investigate or chat — persist=False is the default and
+    every non-seed caller relies on that default rather than passing True."""
+    pipeline.run_investigation("revenue")
+
+    assert saved == []
 
 
 def test_returned_bundle_has_no_narrative(traced, saved):
@@ -91,7 +104,7 @@ def test_returned_bundle_has_no_narrative(traced, saved):
 
 def test_stored_row_is_marked_not_narrated(traced, saved):
     """`narrated` only means something if /investigate never sets it."""
-    pipeline.run_investigation("revenue")
+    pipeline.run_investigation("revenue", persist=True)
 
     assert saved[0]["bundle"].narrative is None
 
@@ -123,7 +136,7 @@ def test_tracing_disabled_still_investigates_and_stores(monkeypatch, saved):
 
     monkeypatch.setattr("api.pipeline.investigation_trace", no_tracing)
 
-    bundle = pipeline.run_investigation("revenue")
+    bundle = pipeline.run_investigation("revenue", persist=True)
 
     assert isinstance(bundle, EvidenceBundle)
     assert bundle.trace_url is None

@@ -103,6 +103,7 @@
         <option value="isolation_forest">isolation_forest</option></select></label>
       <button class="act" onclick="runDiscover()">Find anomalies</button>
       <button class="act" onclick="exportCSV('dsc-result','anomalies.csv')">Export CSV</button>
+      <button class="act" onclick="runSeedBundles()">Seed bundles from these findings</button>
     </div>
     <div id="dsc-result" class="muted">Sweeps every metric and every value of every low-cardinality
       dimension across the window (day grain), merges adjacent flagged buckets into incidents, then
@@ -112,6 +113,13 @@
       <b>Nothing to configure</b>: grain, scope, and each metric's sensitivity (measured from its own
       natural noise — ~2.8% for fill_rate, ~21% for requests, ~84% for ctr, since clicks are rare and
       therefore noisy) are all decided automatically. Runs in the background (~15–60s).</div>
+    <div id="seed-result" class="muted" style="margin-top:10px">
+      "Find anomalies" above only sweeps and previews — nothing is stored. <b>Seed bundles</b> runs
+      the SAME sweep, then a full investigation (decompose + drill + narrate) for each distinct
+      finding and persists one Evidence Bundle each into <span class="mono">bundles</span> — that's
+      what populates the dashboard's anomaly switcher. Uses the same From/To/Model above, so the
+      bundle count should match the "distinct finding(s)" count reported by Find anomalies.
+    </div>
 
     <h2>Ground-truth harness <span class="muted">(detection = chosen method · localization = drill-down)</span>
       <button class="act" onclick="runBench()">Run benchmark</button>
@@ -371,6 +379,48 @@ function renderDiscover(j){
       <span class="mono">{}</span> means the drill-down found no responsible segment (the move is genuinely
       uniform), a dash means not drilled.</div>
     <table>${head}<tbody>${primaries.map(row).join('')}</tbody></table>${echoBlock}`;
+}
+async function runSeedBundles(){
+  const method = $('#dsc-method').value;
+  $('#seed-result').innerHTML = '<span class="muted">Sweeping + investigating + narrating each finding… this is slower than Find anomalies alone (one full pipeline run per distinct finding, not just a sweep). Can take a few minutes.</span>';
+  const {job_id} = await post('/seed_bundles', {start:$('#dsc-start').value, end:$('#dsc-end').value, method});
+  const poll = setInterval(async ()=>{
+    const j = await api('/jobs/'+job_id);
+    if(j.finished){ clearInterval(poll); renderSeedBundles(j); }
+  }, 2500);
+}
+function renderSeedBundles(j){
+  if(j.status!=='done' || !j.result){ $('#seed-result').innerHTML = '<span class="pill no">error</span> '+esc(j.log||''); return; }
+  const res = j.result;
+  const rows = res.bundles || [];
+  const ok = rows.filter(r=>!r.error && !r.skipped);
+  const already = rows.filter(r=>r.skipped);
+  const errored = rows.filter(r=>r.error);
+  const head = `<thead><tr><th>Metric</th><th>Window</th><th>Scope</th><th>Detected</th><th>Localized</th></tr></thead>`;
+  const row = r=>`<tr>
+    <td class="mono">${esc(r.metric)}</td>
+    <td class="mono">${esc(String(r.window||'').slice(0,10))}</td>
+    <td><span class="pill ${r.scope==='segment'?'yes':''}">${esc(r.scope||'global')}</span></td>
+    <td><span class="pill ${r.detected?'yes':'no'}">${r.detected?'yes':'no'}</span></td>
+    <td class="mono">${seg(r.localized)}</td></tr>`;
+  const skipRow = r=>`<tr><td class="mono">${esc(r.metric)}</td><td class="mono">${esc(String(r.window||'').slice(0,10))}</td>
+    <td><span class="pill ${r.scope==='segment'?'yes':''}">${esc(r.scope||'global')}</span></td>
+    <td colspan="2" class="muted">already in bundles — not re-investigated</td></tr>`;
+  const errRow = r=>`<tr><td class="mono">${esc(r.metric)}</td><td class="mono">${esc(String(r.window||'').slice(0,10))}</td>
+    <td colspan="3" class="muted">${esc(r.error)}</td></tr>`;
+  const alreadyBlock = already.length ? `<details style="margin-top:14px" open><summary class="muted" style="cursor:pointer">
+      ${already.length} already present — skipped, not re-investigated. Click to inspect.</summary>
+      <table>${head}<tbody>${already.map(skipRow).join('')}</tbody></table></details>` : '';
+  const errBlock = errored.length ? `<details style="margin-top:14px"><summary class="muted" style="cursor:pointer">
+      ${errored.length} error(s) — click to inspect.</summary>
+      <table>${head}<tbody>${errored.map(errRow).join('')}</tbody></table></details>` : '';
+  $('#seed-result').innerHTML = `<div class="muted" style="margin:8px 0">
+      <b>${res.seeded}</b> new bundle(s) persisted, <b>${res.already_present}</b> already present
+      (skipped — idempotent, no duplicate rows), ${res.errors} error(s), ${res.echoes_skipped}
+      echo(es) skipped as duplicates of a distinct finding already seeded. New + already-present
+      should equal the "distinct finding(s)" count Find anomalies reports, since both run the
+      identical sweep.</div>
+    <table>${head}<tbody>${ok.map(row).join('')}</tbody></table>${alreadyBlock}${errBlock}`;
 }
 async function runMega(){
   $('#mega-result').innerHTML = '<span class="muted">Running… all methods × 4 cases × several hours. This takes ~30–60s.</span>';
