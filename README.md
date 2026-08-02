@@ -24,7 +24,7 @@ that is not in the evidence.
 | Rohan M Rao | [@Rohanmrao](https://github.com/Rohanmrao) |
 | Ankith Dinakar | [@Ankith2502](https://github.com/Ankith2502) |
 | Shashank | [@ShashankEC37](https://github.com/ShashankEC37) |
-| Shreyas Bharadhwaj S P | _handle to be added_ |
+| Shreyas Bharadhwaj S P | [@bharadhwaj18](https://github.com/bharadhwaj18) |
 
 ## What it does
 
