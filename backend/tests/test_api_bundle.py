@@ -106,9 +106,44 @@ def test_list_bundles_forwards_limit(client, monkeypatch):
 
 
 def test_list_bundles_empty_is_not_an_error(client, monkeypatch):
+    # Datastore reachable but no rows yet: 200 with an empty list and engine:"live".
+    monkeypatch.setattr("api.main.clickhouse_available", lambda: True)
     monkeypatch.setattr("api.main.store.list_investigations", lambda limit: [])
 
     res = client.get("/bundles")
 
     assert res.status_code == 200
     assert res.json() == {"count": 0, "investigations": [], "engine": "live"}
+
+
+def test_list_bundles_offline_fails_soft(client, monkeypatch):
+    # Datastore unreachable: fail soft (200 + engine:"offline"), never a 500.
+    monkeypatch.setattr("api.main.clickhouse_available", lambda: False)
+
+    res = client.get("/bundles")
+
+    assert res.status_code == 200
+    assert res.json() == {"count": 0, "investigations": [], "engine": "offline"}
+
+
+def test_get_trace_returns_the_timeline(client, monkeypatch):
+    monkeypatch.setattr("api.main.clickhouse_available", lambda: True)
+    monkeypatch.setattr("api.main.store.load_meta", lambda _id: ("trace-1", None))
+    monkeypatch.setattr("api.main.trace_read.trace_view",
+                        lambda tid: {"available": True, "total_ms": 2876, "steps": []})
+
+    payload = client.get("/trace/abc-123").json()
+
+    assert payload["available"] is True
+    assert payload["total_ms"] == 2876
+
+
+def test_get_trace_is_200_even_when_unavailable(client, monkeypatch):
+    """The drawer shows a reason; a missing trace must never 500 the dashboard."""
+    monkeypatch.setattr("api.main.clickhouse_available", lambda: True)
+    monkeypatch.setattr("api.main.store.load_meta", lambda _id: (None, None))
+
+    res = client.get("/trace/abc-123")
+
+    assert res.status_code == 200
+    assert res.json()["available"] is False

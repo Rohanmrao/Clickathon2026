@@ -1138,3 +1138,136 @@ body {
   flex: none; width: var(--base-8); height: var(--base-8);
   border-radius: 50%; background: var(--content-negative-main);
 }
+
+/* ---------- trace drawer: the investigation's story, slid over from the right ---------- */
+.trace-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: color-mix(in srgb, var(--bg-canvas) 62%, transparent);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.24s ease;
+}
+.trace-scrim.open { opacity: 1; pointer-events: auto; }
+
+.trace-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  z-index: 41;
+  width: min(var(--base-348) * 1.6, 92vw);
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-elevated);
+  border-left: var(--hairline) solid var(--border-neutral-activated);
+  transform: translateX(100%);
+  transition: transform 0.34s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.trace-drawer.open { transform: translateX(0); }
+
+.trace-head {
+  flex: none;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--all-gap-s);
+  padding: var(--all-padding-s);
+  border-bottom: var(--hairline) solid var(--border-neutral-default);
+}
+.trace-sub {
+  margin-top: var(--group-gap-s);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--group-gap-l);
+  font-size: var(--font-size-caption-1);
+  color: var(--content-display-text-caption-dimmed);
+}
+.trace-score {
+  padding: var(--group-padding-m) var(--all-padding-xs);
+  border-radius: var(--round);
+  background: var(--bg-neutral-bright-default);
+}
+
+.trace-body { flex: 1; min-height: 0; overflow-y: auto; padding: var(--all-padding-s); }
+.trace-empty { color: var(--content-display-text-caption-dimmed); font-size: var(--font-size-caption-1); }
+
+.trace-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--all-gap-xs); }
+/* Left rail + node: reads as a sequence, which is the whole point of a trace. */
+.trace-step {
+  position: relative;
+  padding: var(--all-padding-xs) var(--all-padding-xs) var(--all-padding-xs) var(--all-padding-l);
+  border-left: var(--hairline) solid var(--border-neutral-activated);
+}
+.trace-step::before {
+  content: "";
+  position: absolute;
+  left: calc(var(--base-4) * -1);
+  top: var(--base-14);
+  width: var(--base-8);
+  height: var(--base-8);
+  border-radius: var(--round);
+  background: var(--content-secondary-bright);
+}
+.trace-step.is-stop::before { background: var(--content-display-text-caption-dimmed); }
+
+.ts-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--all-gap-xs); }
+.ts-label {
+  font-size: var(--font-size-caption-2);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: var(--content-display-text-title-main);
+}
+.ts-ms { font-size: var(--font-size-caption-2); color: var(--content-display-text-caption-dimmed); }
+.ts-headline {
+  margin: var(--group-gap-s) 0 0;
+  font-size: var(--font-size-caption-1);
+  line-height: var(--line-height-body-2);
+  color: var(--content-display-text-body-main);
+}
+.ts-toggle {
+  margin-top: var(--group-gap-s);
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--content-display-text-caption-dimmed);
+  font-family: var(--font-family-common);
+  font-size: var(--font-size-caption-2);
+  cursor: pointer;
+  text-decoration: underline;
+}
+.ts-toggle:hover { color: var(--content-display-text-title-main); }
+
+.ts-queries { margin-top: var(--group-gap-s); display: flex; flex-direction: column; gap: var(--group-gap-s); }
+.ts-query {
+  border: var(--hairline) solid var(--border-neutral-default);
+  border-radius: var(--all-radius-xs);
+  background: var(--bg-surface);
+  padding: var(--all-padding-xs);
+}
+.ts-query-head {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--all-gap-xs);
+  font-size: var(--font-size-caption-2);
+  color: var(--content-display-text-caption-dimmed);
+}
+.ts-sql {
+  margin: var(--group-gap-s) 0 0;
+  overflow-x: auto;
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-caption-2);
+  line-height: var(--line-height-caption-1);
+  color: var(--content-display-text-body-main);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.trace-foot {
+  flex: none;
+  padding: var(--all-padding-s);
+  border-top: var(--hairline) solid var(--border-neutral-default);
+}

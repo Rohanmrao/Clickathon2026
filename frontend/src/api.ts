@@ -127,3 +127,39 @@ export async function sendChat(
   const data = await res.json();
   return data.choices?.[0]?.message?.content ?? "(no reply)";
 }
+
+// The investigation's Langfuse trace, reshaped by the backend into a readable timeline.
+// Always resolves: when tracing is off or Langfuse is unreachable the backend returns
+// { available: false, reason }, which the drawer shows instead of failing.
+export interface TraceQuery {
+  name: string;
+  sql: string;
+  ms: number;
+  summary: Record<string, unknown>;
+}
+
+export interface TraceStep {
+  phase: string;
+  ms: number;
+  headline: string;
+  verdict: Record<string, unknown>;
+  queries: TraceQuery[];
+}
+
+export interface TraceView {
+  available: boolean;
+  reason?: string;
+  total_ms?: number;
+  scores?: Record<string, number>;
+  steps?: TraceStep[];
+}
+
+export async function getTrace(investigationId: string): Promise<TraceView> {
+  try {
+    const res = await fetch(`${API}/trace/${investigationId}`);
+    if (!res.ok) return { available: false, reason: `API returned ${res.status}` };
+    return (await res.json()) as TraceView;
+  } catch {
+    return { available: false, reason: "Backend unreachable" };
+  }
+}

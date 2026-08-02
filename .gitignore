@@ -27,3 +27,7 @@ dist/
 *.parquet
 config/clickhouse_credentials.txt
 config/clickhouse-api-key-QueryAPIKey.txt
+# Never commit env files again (a secret was purged from history here)
+config/env*
+.env*
+!.env.example

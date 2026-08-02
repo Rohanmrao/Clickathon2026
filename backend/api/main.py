@@ -7,6 +7,15 @@ Endpoint surface (docs/superpowers/specs/2026-08-01-rca-api-design.md):
     GET  /bundles                   investigation history
     POST /investigate               run the pipeline (still fixture-backed)
     POST /v1/chat/completions       conversational entry point; LibreChat points here
+"""Lane C: FastAPI orchestration.
+
+Endpoint surface (docs/superpowers/specs/2026-08-01-rca-api-design.md):
+
+    GET  /health                    liveness
+    GET  /bundle/{id}               retrieve a stored Evidence Bundle
+    GET  /bundles                   investigation history
+    POST /investigate               run the pipeline (still fixture-backed)
+    POST /v1/chat/completions       conversational entry point; LibreChat points here
 
   uvicorn api.main:app --reload --port 8000
 """
@@ -14,11 +23,12 @@ from __future__ import annotations
 
 import json
 import uuid
-
 from datetime import datetime
 
 from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -27,12 +37,22 @@ from api import dev, pipeline
 from config import LANGFUSE
 from data import store
 from data.client import clickhouse_available
+from api import chat as chatlib
+from api import dev, pipeline
+from config import LANGFUSE
+from data import store
+from data.client import clickhouse_available
 from models import EvidenceBundle, Window
+from narrator import trace_read
 
 app = FastAPI(title="Automated Root-Cause Analyst")
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
 )
+
+# Dev/admin dashboard at /dev — local only, gated by env (default on). Never enable on a public deploy.
+if dev.dev_enabled():
+    app.include_router(dev.router)
 
 # Dev/admin dashboard at /dev — local only, gated by env (default on). Never enable on a public deploy.
 if dev.dev_enabled():
@@ -46,6 +66,20 @@ class InvestigateRequest(BaseModel):
 
 @app.get("/health")
 def health() -> dict:
+    """Wiring dashboard, not just liveness.
+
+    Judges run this stack locally, where the failure modes are silent: a fresh Langfuse has no
+    API keys and tracing quietly no-ops, and the RCA engine may still be stubbed. Reporting
+    both here means a judge sees what is actually live before drawing conclusions from it.
+    """
+    return {
+        "ok": True,
+        "engine": pipeline.engine_mode(),            # live | fixture | offline
+        "langfuse": {
+            "enabled": bool(LANGFUSE["public_key"]),
+            "host": LANGFUSE["host"],
+        },
+    }
     """Wiring dashboard, not just liveness.
 
     Judges run this stack locally, where the failure modes are silent: a fresh Langfuse has no
@@ -120,6 +154,20 @@ def list_bundles(limit: int = 50) -> dict:
         return {"count": 0, "investigations": [], "engine": "offline"}
     rows = store.list_investigations(limit)
     return {"count": len(rows), "investigations": rows, "engine": "live"}
+
+
+@app.get("/trace/{investigation_id}")
+def get_trace(investigation_id: str) -> dict:
+    """The investigation's Langfuse trace, reshaped as a readable timeline for the dashboard.
+
+    The Langfuse UI itself is developer-facing; this is the customer view — one step per phase
+    with a plain-language headline and the SQL behind it. Always 200: a missing trace or an
+    unreachable Langfuse comes back as `available: false` with a reason, which the drawer shows.
+    """
+    if not clickhouse_available():
+        return {"available": False, "reason": "Investigation store offline (check CLICKHOUSE_*)"}
+    trace_id, _ = store.load_meta(investigation_id)
+    return trace_read.trace_view(trace_id)
 
 
 @app.get("/dashboard")

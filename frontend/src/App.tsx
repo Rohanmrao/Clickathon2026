@@ -7,6 +7,7 @@ import { FactorSplit } from "./components/FactorSplit";
 import { MetricTree } from "./components/MetricTree";
 import { RuledOutPanel } from "./components/RuledOutPanel";
 import { SidebarDock } from "./components/SidebarDock";
+import { TraceDrawer } from "./components/TraceDrawer";
 import { ClickathonMark } from "./components/ClickathonMark";
 import { DateField } from "./components/DateField";
 import type { EvidenceBundle, InvestigationRow } from "./types";
@@ -43,6 +44,7 @@ export default function App() {
   const [winStart, setWinStart] = useState("");
   const [winEnd, setWinEnd] = useState("");
   const [history, setHistory] = useState<InvestigationRow[]>([]);
+  const [traceOpen, setTraceOpen] = useState(false);
   const timer = useRef<number | undefined>(undefined);
 
   // Theme lives on <body> so page backgrounds (not just cards) follow variables-final.css.
@@ -202,8 +204,8 @@ export default function App() {
             <DateField value={winStart} onChange={setWinStart} aria-label="Window start" />
             <DateField value={winEnd} onChange={setWinEnd} aria-label="Window end" />
           </div>
-          {bundle.trace_url && (
-            <a className="ghost-btn" href={bundle.trace_url} target="_blank" rel="noreferrer">Open trace</a>
+          {selectedId && (
+            <button className="ghost-btn" onClick={() => setTraceOpen(true)}>Open trace</button>
           )}
           <button className="primary-btn" onClick={run} disabled={running}>
             {running ? "Investigating…" : "Investigate"}
@@ -296,6 +298,13 @@ export default function App() {
           <SidebarDock history={history} onOpenRun={openRun} onRefresh={refreshHistory} segOf={segOf} bundleId={selectedId} />
         </aside>
       </main>
+
+      <TraceDrawer
+        investigationId={selectedId}
+        traceUrl={bundle.trace_url}
+        open={traceOpen}
+        onClose={() => setTraceOpen(false)}
+      />
     </div>
   );
 }
