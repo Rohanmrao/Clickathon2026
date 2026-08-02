@@ -58,7 +58,9 @@ def run_query(
     """
     params = params or {}
     lf = langfuse()
-    if lf is None:
+    # Span only inside an active trace: untraced callers (dev console, benchmarker) would
+    # otherwise each mint a single-span orphan trace and bury real investigations in the list.
+    if lf is None or lf.get_current_trace_id() is None:
         return _execute(sql, params)
 
     with lf.start_as_current_observation(name=name, as_type="span") as span:
