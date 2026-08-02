@@ -11,25 +11,24 @@ even though the arithmetic runs in Python.
 from __future__ import annotations
 
 from datetime import datetime
-from functools import lru_cache
+from functools import cache
 
 import pandas as pd
 
 from config import config
+from config import hourly_source as _hourly
 from data.calibration import effect_threshold
 from data.client import run_query
 from metrics import metric_sql
 from models import Anomaly, Window
 from rca.robust import mad, med, pct_delta, robust_z
 
-_HOURLY = config()["clickhouse"]["hourly_table"]
-
 
 def _series_sql(metric: str) -> str:
-    return f"SELECT hour, {metric_sql(metric, 'rollup')} AS value FROM {_HOURLY} GROUP BY hour ORDER BY hour"
+    return f"SELECT hour, {metric_sql(metric, 'rollup')} AS value FROM {_hourly()} GROUP BY hour ORDER BY hour"
 
 
-@lru_cache(maxsize=None)
+@cache
 def _cached_series(metric: str) -> tuple[tuple, tuple, str]:
     """Same fix as isolation_forest._cached_series — the series is identical for every target
     hour scored against the same metric, so a sweep of N buckets was refetching the same

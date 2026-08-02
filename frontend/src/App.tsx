@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { getBundle, getHealth, getSeries, getTrace, listBundles, listIncidents, startRangeInvestigation, waitForRangeInvestigation, type IncidentRow, type SeriesPoint } from "./api";
+import { getBundle, getHealth, getSeries, getStreamStatus, getTrace, listBundles, listIncidents,
+         setDataset, startRangeInvestigation, startStream, stopStream, waitForRangeInvestigation,
+         type IncidentRow, type SeriesPoint, type StreamStatus } from "./api";
 import { AnomalyCard } from "./components/AnomalyCard";
 import { DiagnosisCard } from "./components/DiagnosisCard";
 import { FactorSplit } from "./components/FactorSplit";
@@ -7,6 +9,7 @@ import { MetricTree } from "./components/MetricTree";
 import { RuledOutPanel } from "./components/RuledOutPanel";
 import { SidebarDock } from "./components/SidebarDock";
 import { TraceDrawer } from "./components/TraceDrawer";
+import { StreamBar } from "./components/StreamBar";
 import { ClickathonMark } from "./components/ClickathonMark";
 import { DateField } from "./components/DateField";
 import type { EvidenceBundle, InvestigationRow } from "./types";
@@ -15,6 +18,8 @@ import type { EvidenceBundle, InvestigationRow } from "./types";
 const TRACE_SNAPSHOT_DELAY_MS = 10000;
 // Engine status is a live condition, so re-poll it rather than trusting page load.
 const HEALTH_POLL_MS = 30000;
+// Ticks are ~1-2.5s, so poll a touch faster than a batch to keep the bar honest.
+const STREAM_POLL_MS = 1500;
 // Survives the post-seed reload so the fresh finding is what gets showcased, not the biggest.
 const SHOWCASE_KEY = "rca-showcase-id";
 
@@ -41,7 +46,9 @@ function incidentLabel(row: IncidentRow): string {
   try {
     const parsed = JSON.parse(row.localized_segment || "{}");
     const vals = Object.values(parsed);
-    if (vals.length) seg = ` · ${vals.join(", ")}`;
+    // Cap the segment list: a 4-dimension localization made the option so wide the control
+    // overlapped the brand mark. The full segment is still on the card and in the tree.
+    if (vals.length) seg = ` · ${vals.slice(0, 2).join(", ")}${vals.length > 2 ? "…" : ""}`;
   } catch {
     /* not JSON — leave the label unsegmented */
   }
@@ -67,6 +74,9 @@ export default function App() {
   const [winEnd, setWinEnd] = useState("");
   const [history, setHistory] = useState<InvestigationRow[]>([]);
   const [traceOpen, setTraceOpen] = useState(false);
+  const [stream, setStream] = useState<StreamStatus | null>(null);
+  const [dataset, setDatasetState] = useState<string | null>(null);
+  const streamPoll = useRef<number | undefined>(undefined);
   const [series, setSeries] = useState<SeriesPoint[] | undefined>(undefined);
   const [seriesLoading, setSeriesLoading] = useState(false);
   const timer = useRef<number | undefined>(undefined);
@@ -119,7 +129,7 @@ export default function App() {
   // Exception: right after a seed run the page reloads itself, and the id it left in
   // sessionStorage wins, so the reload lands on what was just found rather than the biggest.
   useEffect(() => {
-    getHealth().then((h) => h && setEngine(h.engine));
+    getHealth().then((h) => { if (h) { setEngine(h.engine); setDatasetState(h.dataset?.target ?? null); } });
     refreshHistory();
     const justSeeded = SEEDED_SHOWCASE_ID;
     listIncidents().then((rows) => {
@@ -146,15 +156,62 @@ export default function App() {
     // single cold/slow probe used to latch the "offline" banner until the next investigation,
     // long after the database was healthy again.
     const health = window.setInterval(
-      () => getHealth().then((h) => h && setEngine(h.engine)),
+      () => getHealth().then((h) => { if (h) { setEngine(h.engine); setDatasetState(h.dataset?.target ?? null); } }),
       HEALTH_POLL_MS,
     );
+    // Pick up a replay already in flight (e.g. after a page refresh mid-stream).
+    getStreamStatus().then((s) => {
+      if (s && s.status === "running") { setStream(s); beginPolling(); }
+    });
     return () => {
       window.clearInterval(timer.current);
       window.clearInterval(health);
+      window.clearInterval(streamPoll.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Real-time mode: poll status, and refresh the incident feed so detections found mid-replay
+  // show up in the switcher without waiting for the run to finish.
+  const beginPolling = () => {
+    window.clearInterval(streamPoll.current);
+    let lastHits = -1;
+    streamPoll.current = window.setInterval(async () => {
+      const s = await getStreamStatus();
+      if (!s) return;
+      setStream(s);
+      const hits = s.detections?.length ?? 0;
+      if (hits !== lastHits) { lastHits = hits; listIncidents().then(setIncidents); refreshHistory(); }
+      if (s.status !== "running") {
+        window.clearInterval(streamPoll.current);
+        listIncidents().then(setIncidents);
+      }
+    }, STREAM_POLL_MS);
+  };
+
+  const onStartStream = async () => {
+    const s = await startStream();          // reset:true — truncates, then refills from scratch
+    if (!s) return;
+    setStream(s);
+    setIncidents([]);                       // the old feed describes data that was just truncated
+    beginPolling();
+  };
+
+  // The dataset is what everything queries, so it must be visible and switchable. A silent
+  // revert to dev after a stream made "Find anomalies" return 0 over the streamed range.
+  const onSwitchDataset = async (target: string) => {
+    const d = await setDataset(target);
+    if (d) {
+      setDatasetState(d.target);
+      listIncidents().then(setIncidents);
+      refreshHistory();
+    }
+  };
+
+  const onStopStream = async () => {
+    const s = await stopStream();
+    if (s) setStream(s);
+  };
 
   // `reveal` animates the drill-down instead of showing it already solved — used only for a
   // bundle that was just seeded, so the post-reload landing still reads as a search.
@@ -223,7 +280,7 @@ export default function App() {
       if (fresh?.investigation_id) {
         sessionStorage.setItem(SHOWCASE_KEY, fresh.investigation_id);
       }
-      window.location.reload();
+      window.location.reload(); // remount re-reads /health, so engine + dataset refresh there
     } finally {
       setRunning(false);
     }
@@ -298,6 +355,15 @@ export default function App() {
             )}
           </button>
           <span className="status-pill"><span className="live-dot" /> {engineLabel}</span>
+          {dataset && (
+            <button
+              className={`ghost-btn dataset-pill ${dataset === "unseen" ? "is-unseen" : ""}`}
+              onClick={() => onSwitchDataset(dataset === "unseen" ? "dev" : "unseen")}
+              title="Which table set investigations query. Click to switch."
+            >
+              data · {dataset}
+            </button>
+          )}
           <div className="controls">
             <DateField
               value={winStart}
@@ -314,9 +380,17 @@ export default function App() {
               max={DATA_MAX_DATE}
             />
           </div>
-          {selectedId && (
-            <button className="ghost-btn" onClick={() => setTraceOpen(true)}>Open trace</button>
-          )}
+          <button
+            className="ghost-btn"
+            onClick={() => setTraceOpen(true)}
+            disabled={!selectedId}
+            title={selectedId ? "How this was investigated" : "Select or run an investigation first"}
+          >
+            Open trace
+          </button>
+          <button className="ghost-btn" onClick={onStartStream} disabled={stream?.status === "running"}>
+            {stream?.status === "running" ? "Streaming…" : "Start stream"}
+          </button>
           <button
             className="primary-btn"
             onClick={() => run()}
@@ -335,6 +409,10 @@ export default function App() {
           <code> CLICKHOUSE_* </code> in <code>.env</code>, then recreate the backend
           (<code>docker compose up -d backend</code>).
         </div>
+      )}
+
+      {stream && stream.status !== "idle" && (
+        <StreamBar stream={stream} onStop={onStopStream} />
       )}
 
       {!booting && !bundle ? (

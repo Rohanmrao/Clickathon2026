@@ -5,6 +5,8 @@ Expects schema.sql tables to be creatable from scratch. See prompts/01-data-clic
 """
 from __future__ import annotations
 
+import re
+
 from pathlib import Path
 
 from data.client import get_client
@@ -33,7 +35,10 @@ def _statements(names: tuple[str, ...]) -> list[str]:
     lines = [line for line in text.splitlines() if not line.strip().startswith("--")]
     cleaned = "\n".join(lines)
     raw = [s.strip() for s in cleaned.split(";") if s.strip()]
-    return [s for s in raw if any(f"EXISTS {name}" in s for name in names)]
+    # Word-boundary match: a plain substring test makes "EXISTS events_full" also select
+    # events_full_unseen, so loading the dev tables would quietly create the unseen ones too.
+    pattern = re.compile(r"EXISTS (?:%s)\b" % "|".join(re.escape(n) for n in names))
+    return [s for s in raw if pattern.search(s)]
 
 
 def run_base_schema(client) -> None:
@@ -58,8 +63,9 @@ def load_ad_events(client) -> None:
         client.raw_insert("ad_events", insert_block=f, fmt="Parquet")
 
 
-def load_csv(client, table: str, filename: str) -> None:
-    csv_path = DATA_DIR / filename
+def load_csv(client, table: str, filename: str, data_dir: Path | None = None) -> None:
+    """`data_dir` overrides the default slice — the unseen dims ship in their own folder."""
+    csv_path = (data_dir or DATA_DIR) / filename
     with open(csv_path, "rb") as f:
         client.raw_insert(table, insert_block=f, fmt="CSVWithNames")
 

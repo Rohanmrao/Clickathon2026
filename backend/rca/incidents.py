@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
 from config import config
+from config import hourly_source as _hourly
 from data.calibration import effect_threshold
 from data.client import run_query
 from metrics import metric_sql
@@ -13,7 +14,6 @@ from rca.robust import mad, med, pct_delta, robust_z
 
 _CFG = config()
 _DET = _CFG["detection"]
-_HOURLY = _CFG["clickhouse"]["hourly_table"]
 
 # Revenue alone is not enough (see module docstring). Overridable via config.
 DEFAULT_METRICS = _CFG["rca"].get(
@@ -414,7 +414,7 @@ def _series_sql(metric: str, grain: str) -> str:
     # resolve the inner `requests` to the alias and reject it as a nested aggregate.
     return (
         f"SELECT {_GRAIN_SQL[grain]} AS bucket, {metric_sql(metric, 'rollup')} AS value, "
-        f"sum(requests) AS bucket_requests FROM {_HOURLY} "
+        f"sum(requests) AS bucket_requests FROM {_hourly()} "
         f"WHERE hour >= toDateTime({{hist_start:String}}) AND hour < toDateTime({{end:String}}) "
         f"GROUP BY bucket ORDER BY bucket"
     )
@@ -486,7 +486,7 @@ def scan_incidents(
 def _bucket_volumes(start: datetime, end: datetime, grain: str) -> dict[datetime, int]:
     """requests per bucket, for volume-weighting the incident score regardless of which
     metric/detector produced the anomaly."""
-    sql = f"SELECT {_GRAIN_SQL[grain]} AS bucket, sum(requests) AS vol FROM {_HOURLY} WHERE hour >= toDateTime({{s:String}}) AND hour < toDateTime({{e:String}}) GROUP BY bucket"
+    sql = f"SELECT {_GRAIN_SQL[grain]} AS bucket, sum(requests) AS vol FROM {_hourly()} WHERE hour >= toDateTime({{s:String}}) AND hour < toDateTime({{e:String}}) GROUP BY bucket"
     out = run_query(sql, {"s": _fmt(start), "e": _fmt(end)})
     return {r[0]: int(r[1]) for r in out["rows"]}
 
@@ -572,7 +572,7 @@ def _series_sql_by_segment(metric: str, grain: str, dimension: str) -> str:
     return (
         f"SELECT {dimension} AS seg, {_GRAIN_SQL[grain]} AS bucket, "
         f"{metric_sql(metric, 'rollup')} AS value, sum(requests) AS bucket_requests "
-        f"FROM {_HOURLY} "
+        f"FROM {_hourly()} "
         f"WHERE hour >= toDateTime({{hist_start:String}}) AND hour < toDateTime({{end:String}}) "
         f"GROUP BY seg, bucket ORDER BY seg, bucket"
     )

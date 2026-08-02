@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
 from config import config
+from config import hourly_source as _hourly
 from data.calibration import effect_threshold
 from data.client import run_query
 from metrics import metric_sql
@@ -20,7 +21,6 @@ from rca.robust import mad, med, pct_delta, robust_z
 
 _CFG = config()
 _DET = _CFG["detection"]
-_HOURLY = _CFG["clickhouse"]["hourly_table"]
 _ALLOWED = set(_CFG["rca"]["drilldown_dimensions"])
 
 
@@ -82,15 +82,15 @@ def _where(segment: dict | None) -> tuple[str, dict]:
 
 def _observed_sql(expr: str, where_sql: str, dim: str | None = None) -> str:
     if dim:
-        return f"SELECT {dim} AS seg, {expr} AS value FROM {_HOURLY} WHERE hour = toDateTime({{target:String}}){where_sql} GROUP BY {dim}"
-    return f"SELECT {expr} AS value FROM {_HOURLY} WHERE hour = toDateTime({{target:String}}){where_sql}"
+        return f"SELECT {dim} AS seg, {expr} AS value FROM {_hourly()} WHERE hour = toDateTime({{target:String}}){where_sql} GROUP BY {dim}"
+    return f"SELECT {expr} AS value FROM {_hourly()} WHERE hour = toDateTime({{target:String}}){where_sql}"
 
 
 def _baseline_sql(expr: str, where_sql: str, dim: str | None = None) -> str:
     head = f"{dim} AS seg, " if dim else ""
     grp = f"{dim}, hour" if dim else "hour"
     return (
-        f"SELECT {head}{expr} AS value FROM {_HOURLY} "
+        f"SELECT {head}{expr} AS value FROM {_hourly()} "
         f"WHERE toDayOfWeek(hour) = toDayOfWeek(toDateTime({{target:String}})) "
         f"AND toHour(hour) = toHour(toDateTime({{target:String}})) "
         f"AND hour < toDateTime({{target:String}}) AND hour >= toDateTime({{start:String}}){where_sql} "

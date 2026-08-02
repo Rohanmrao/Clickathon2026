@@ -4,6 +4,42 @@
     "enriched_table": "events_full",
     "hourly_table": "hourly_summary"
   },
+  "datasets": {
+    "dev": {
+      "events": "ad_events",
+      "enriched": "events_full",
+      "hourly": "hourly_summary",
+      "apps": "apps_dim",
+      "advertisers": "advertisers_dim",
+      "geo_device": "geo_device_dim"
+    },
+    "unseen": {
+      "events": "ad_events_unseen",
+      "enriched": "events_full_unseen",
+      "hourly": "hourly_summary_unseen",
+      "apps": "apps_dim_unseen",
+      "advertisers": "advertisers_dim_unseen",
+      "geo_device": "geo_device_dim_unseen"
+    }
+  },
+  "active_dataset": "dev",
+  "history_dataset": "dev",
+  "stream": {
+    "source_dir": "InMobi/unseen_data",
+    "batch_hours": 1,
+    "tick_seconds": 2,
+    "detect_metrics": [
+      "revenue",
+      "fill_rate",
+      "ecpm",
+      "requests",
+      "ctr",
+      "rpr",
+      "render_rate"
+    ],
+    "detect_method": "isolation_forest",
+    "deep_scan_every": 24
+  },
   "metrics": {
     "base_events": {
       "requests": "count(*)",
@@ -20,10 +56,22 @@
       "revenue": "sum(revenue)"
     },
     "ratios": {
-      "fill_rate": ["fills", "requests"],
-      "render_rate": ["impressions", "fills"],
-      "ctr": ["clicks", "impressions"],
-      "rpr": ["revenue", "requests"]
+      "fill_rate": [
+        "fills",
+        "requests"
+      ],
+      "render_rate": [
+        "impressions",
+        "fills"
+      ],
+      "ctr": [
+        "clicks",
+        "impressions"
+      ],
+      "rpr": [
+        "revenue",
+        "requests"
+      ]
     },
     "ecpm_multiplier": 1000
   },
@@ -42,22 +90,32 @@
     "min_effect_pct": {
       "fill_rate": 0.03,
       "render_rate": 0.03,
-      "requests": 0.10,
+      "requests": 0.1,
       "revenue": 0.15,
       "rpr": 0.15,
-      "impressions": 0.10,
+      "impressions": 0.1,
       "ecpm": 0.15,
-      "ctr": 0.40,
-      "_default": 0.10
+      "ctr": 0.4,
+      "_default": 0.1
     },
     "seasonal_ml": {
-      "season_keys": ["weekday", "hour"],
+      "season_keys": [
+        "weekday",
+        "hour"
+      ],
       "residual_z_threshold": 3.5,
       "min_pct_delta": 0.05
     },
     "isolation_forest": {
       "features": "univariate",
-      "feature_columns": ["fill_rate", "render_rate", "ctr", "ecpm", "rpr", "requests"],
+      "feature_columns": [
+        "fill_rate",
+        "render_rate",
+        "ctr",
+        "ecpm",
+        "rpr",
+        "requests"
+      ],
       "n_estimators": 200,
       "contamination": "auto",
       "random_state": 42,
@@ -65,10 +123,23 @@
     }
   },
   "rca": {
-    "revenue_identity_factors": ["requests", "fill_rate", "ecpm"],
+    "revenue_identity_factors": [
+      "requests",
+      "fill_rate",
+      "ecpm"
+    ],
     "drilldown_dimensions": [
-      "region", "country", "os_version", "device_model", "ad_format",
-      "category", "publisher_tier", "vertical", "campaign_type", "app_id", "advertiser_id"
+      "region",
+      "country",
+      "os_version",
+      "device_model",
+      "ad_format",
+      "category",
+      "publisher_tier",
+      "vertical",
+      "campaign_type",
+      "app_id",
+      "advertiser_id"
     ],
     "stop_contribution_threshold": 0.5,
     "min_lift": 1.5,
@@ -76,7 +147,13 @@
     "max_depth": 4,
     "baseline_weeks": 2
   },
-  "ruled_out_hypotheses": ["request_volume", "ctr_quality", "ecpm_price", "device_mix", "seasonality"],
+  "ruled_out_hypotheses": [
+    "request_volume",
+    "ctr_quality",
+    "ecpm_price",
+    "device_mix",
+    "seasonality"
+  ],
   "narrator": {
     "max_sentences": 5,
     "temperature": 0.1

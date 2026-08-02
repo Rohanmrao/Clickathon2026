@@ -203,7 +203,17 @@ _DASHBOARD_FIELDS = [  # everything NOT in _INCIDENT_KEY; those are grouping key
 _INCIDENT_KEY = "metric, window_start, localized_segment"
 
 
-def list_dashboard(limit: int = 50, since: datetime | None = None) -> list[dict[str, Any]]:
+def dataset_bounds(hourly_table: str, client=None) -> tuple[datetime, datetime] | None:
+    """(first, last) hour held by a dataset's rollup, or None when it is empty."""
+    client = client or get_client()
+    count, lo, hi = client.query(
+        f"SELECT count(), min(hour), max(hour) FROM {hourly_table}"
+    ).result_rows[0]
+    return (lo, hi) if count else None
+
+
+def list_dashboard(limit: int = 50, since: datetime | None = None,
+                   within: tuple[datetime, datetime] | None = None) -> list[dict[str, Any]]:
     """Dashboard poll query, straight off `bundles`. `since` (a row's created_at from a prior
     poll) returns only rows created after it, so a polling client doesn't re-fetch everything
     every tick. Excludes the `bundle` JSON column — the card view doesn't need it.
@@ -212,7 +222,19 @@ def list_dashboard(limit: int = 50, since: datetime | None = None) -> list[dict[
     (a re-run, or a sweep finding you drill again) writes two bundles, and without this the
     switcher lists the same anomaly five times — which is what it did.
     """
-    where = "WHERE created_at > {since:DateTime}" if since else ""
+    # `within` scopes the feed to the active dataset. bundles holds every investigation ever
+    # run, so without it a dev-era incident (requests -43.5% on Jun 21) sits in the switcher
+    # while the dashboard is pointed at the streamed slice. The datasets are disjoint in time,
+    # so their window_start ranges separate them cleanly.
+    clauses = []
+    params: dict[str, Any] = {"n": limit}
+    if since:
+        clauses.append("created_at > {since:DateTime}")
+        params["since"] = _naive(since)
+    if within:
+        clauses.append("window_start >= {wlo:DateTime} AND window_start <= {whi:DateTime}")
+        params["wlo"], params["whi"] = _naive(within[0]), _naive(within[1])
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     # `latest_at`, not `created_at`: aliasing an aggregate to the column name it aggregates makes
     # every other argMax(..., created_at) resolve to the alias and fail as a nested aggregate.
     latest = ", ".join(f"argMax({f}, created_at) AS {f}" for f in _DASHBOARD_FIELDS)
@@ -220,7 +242,7 @@ def list_dashboard(limit: int = 50, since: datetime | None = None) -> list[dict[
         f"SELECT {_INCIDENT_KEY}, max(created_at) AS latest_at, {latest} "
         f"FROM {BUNDLES} FINAL {where} "
         f"GROUP BY {_INCIDENT_KEY} ORDER BY latest_at DESC LIMIT {{n:UInt32}}",
-        parameters={"n": limit, **({"since": _naive(since)} if since else {})},
+        parameters=params,
     )
     rows = [dict(zip(result.column_names, r)) for r in result.result_rows]
     for row in rows:  # callers expect created_at, not the internal ordering alias

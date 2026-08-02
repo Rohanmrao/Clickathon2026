@@ -14,6 +14,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 from config import config
+from config import hourly_source as _hourly
 from data.client import run_query
 from metrics import metric_sql, safe_div
 from models import (
@@ -32,7 +33,6 @@ from rca.robust import mad, med, robust_z
 
 _RCA = config()["rca"]
 _DET = config()["detection"]
-_HOURLY = config()["clickhouse"]["hourly_table"]
 _FLAT_MOVE = 0.01  # a non-primary factor whose OWN value moved < this (1%) is flat -> ruled out
 _SCORE_PRIORS = 3  # prior same-shape windows sampled to score the anomaly's surprise
 
@@ -97,14 +97,14 @@ def _fmt(dt: datetime) -> str:
 
 def _data_range() -> tuple[datetime, datetime]:
     row = run_query(
-        f"SELECT toStartOfDay(min(hour)), toStartOfDay(max(hour)) + INTERVAL 1 DAY FROM {_HOURLY}",
+        f"SELECT toStartOfDay(min(hour)), toStartOfDay(max(hour)) + INTERVAL 1 DAY FROM {_hourly()}",
         name="sql:data-range",
     )["rows"][0]
     return row[0], row[1]
 
 
 def _metric_over(metric: str, w: Window) -> tuple[float, str]:
-    sql = (f"SELECT {metric_sql(metric, 'rollup')} FROM {_HOURLY} "
+    sql = (f"SELECT {metric_sql(metric, 'rollup')} FROM {_hourly()} "
            f"WHERE hour >= toDateTime({{s:String}}) AND hour < toDateTime({{e:String}})")
     res = run_query(sql, {"s": _fmt(w.start), "e": _fmt(w.end)}, name=f"sql:window-metric:{metric}")
     return float(res["rows"][0][0] or 0.0), res["resolved_sql"]

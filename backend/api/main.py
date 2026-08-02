@@ -13,6 +13,7 @@ Endpoint surface (docs/superpowers/specs/2026-08-01-rca-api-design.md):
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from datetime import datetime
 
@@ -22,8 +23,8 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from api import chat as chatlib
-from api import dev, pipeline
-from config import LANGFUSE
+from api import dev, pipeline, stream_job
+from config import LANGFUSE, config, dataset_name, target_hourly
 from data import store
 from data.client import clickhouse_available
 from models import EvidenceBundle, Window
@@ -56,11 +57,34 @@ def health() -> dict:
     return {
         "ok": True,
         "engine": pipeline.engine_mode(),            # live | fixture | offline
+        # Which tables everything is pointed at. Reported because it is invisible otherwise:
+        # a sweep over the streamed range returned 0 findings purely because the target had
+        # reverted to dev, and nothing on screen said so.
+        "dataset": {"target": dataset_name("target"), "history": dataset_name("history")},
         "langfuse": {
             "enabled": bool(LANGFUSE["public_key"]),
             "host": LANGFUSE["host"],
         },
     }
+
+
+class DatasetRequest(BaseModel):
+    target: str
+
+
+@app.post("/dataset")
+def set_dataset(req: DatasetRequest) -> dict:
+    """Point investigations at a dataset: 'dev' (Jun 1-Jul 5) or 'unseen' (the streamed slice).
+
+    History deliberately stays where it is — baselines need the five weeks of dev data whichever
+    slice is under investigation.
+    """
+    if req.target not in config()["datasets"]:
+        raise HTTPException(status_code=400,
+                            detail=f"unknown dataset {req.target!r}; expected one of "
+                                   f"{list(config()['datasets'])}")
+    os.environ["RCA_DATASET"] = req.target
+    return {"target": dataset_name("target"), "history": dataset_name("history")}
 
 
 @app.post("/investigate", response_model=EvidenceBundle)
@@ -202,6 +226,43 @@ def scan_status(job_id: str) -> dict:
     return dev.job_status(job_id)
 
 
+class StreamRequest(BaseModel):
+    """Replay knobs; every field defaults to config.stream so a bare POST is a valid demo run."""
+    batch_hours: int | None = None
+    tick_seconds: float | None = None
+    detect_metrics: list[str] | None = None
+    detect_method: str | None = None
+    reset: bool = True
+
+
+@app.post("/stream/start")
+def stream_start(req: StreamRequest) -> dict:
+    """Replay the sealed unseen slice as a live stream, scoring each hour as it lands.
+
+    Ingestion and inference in one loop: every batch is detected on, and a metric that fires
+    gets a full traced investigation persisted, so findings appear in the dashboard while the
+    stream is still running. Switches the process to the unseen dataset for the duration —
+    baselines keep reading dev history, which is what makes 5 days of data detectable at all.
+    """
+    overrides = {k: v for k, v in req.model_dump(exclude={"reset"}).items() if v is not None}
+    try:
+        return stream_job.start(overrides, reset=req.reset)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+
+
+@app.post("/stream/stop")
+def stream_stop() -> dict:
+    """Stop after the current batch — a half-written batch would corrupt the rollup."""
+    return stream_job.stop()
+
+
+@app.get("/stream/status")
+def stream_status() -> dict:
+    """Progress, throughput, and the detections found so far. Safe to poll."""
+    return stream_job.status()
+
+
 @app.get("/dashboard")
 def list_dashboard(limit: int = 50, since: datetime | None = None) -> dict:
     """Dashboard-ready incident feed, meant to be polled.
@@ -212,8 +273,12 @@ def list_dashboard(limit: int = 50, since: datetime | None = None) -> dict:
     Pass `since` (the `created_at` of the newest row already shown) to fetch only what's new
     since the last poll instead of re-pulling the whole list every tick.
     """
-    rows = store.list_dashboard(limit, since)
-    return {"count": len(rows), "incidents": rows}
+    # Scoped to the dataset under investigation. `bundles` holds every investigation ever run,
+    # so an unscoped feed left dev-era incidents (requests -43.5% on Jun 21) in the switcher
+    # while the dashboard was pointed at the streamed slice.
+    within = store.dataset_bounds(target_hourly())
+    rows = store.list_dashboard(limit, since, within=within)
+    return {"count": len(rows), "incidents": rows, "dataset": dataset_name("target")}
 
 
 # ---------------------------------------------------------------------------

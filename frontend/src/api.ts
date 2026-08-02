@@ -282,3 +282,90 @@ export async function scanStatus(jobId: string): Promise<ScanJob | null> {
     return null;
   }
 }
+
+// Live replay of the sealed unseen slice. Starting it truncates the stream tables and refills
+// them batch by batch, scoring each batch as it lands — the dashboard's real-time mode.
+export interface StreamDetection {
+  metric: string;
+  hour: string;
+  direction: string;
+  observed: number;
+  expected: number;
+  pct_delta: number;
+  score: number;
+  investigation_id?: string | null;
+}
+
+export interface SegmentFinding {
+  metric: string;              // e.g. "fill_rate[category=gaming]" for a segment-scoped find
+  peak_pct_delta: number;
+  direction: string;
+  scope?: string;              // "global" | "segment"
+  localized?: Record<string, string> | { error: string };
+}
+
+export interface StreamStatus {
+  status: "idle" | "running" | "done" | "stopped" | "error";
+  batches_done?: number;
+  batches_total?: number;
+  rows_ingested?: number;
+  checks?: number;
+  detections?: StreamDetection[];
+  segment_findings?: SegmentFinding[];   // deep scan: global + per-segment
+  deep_scans?: number;
+  deep_scan_window?: [string, string] | null;
+  current_window?: [string, string] | null;
+  last_tick_ms?: number;
+  dataset?: string;
+  error?: string | null;
+  analysis?: { metric_hours_scored?: number; hours_covered?: number; detections?: number };
+}
+
+export async function startStream(): Promise<StreamStatus | null> {
+  try {
+    const res = await fetch(`${API}/stream/start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reset: true }), // fresh run: truncate, then refill from scratch
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as StreamStatus;
+  } catch {
+    return null;
+  }
+}
+
+export async function stopStream(): Promise<StreamStatus | null> {
+  try {
+    const res = await fetch(`${API}/stream/stop`, { method: "POST" });
+    return res.ok ? ((await res.json()) as StreamStatus) : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function getStreamStatus(): Promise<StreamStatus | null> {
+  try {
+    const res = await fetch(`${API}/stream/status`);
+    return res.ok ? ((await res.json()) as StreamStatus) : null;
+  } catch {
+    return null;
+  }
+}
+
+// Which table set investigations point at. Surfaced because it is otherwise invisible: a sweep
+// over the streamed range silently returned nothing when the target had reverted to dev.
+export interface DatasetMode { target: string; history: string; }
+
+export async function setDataset(target: string): Promise<DatasetMode | null> {
+  try {
+    const res = await fetch(`${API}/dataset`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target }),
+    });
+    return res.ok ? ((await res.json()) as DatasetMode) : null;
+  } catch {
+    return null;
+  }
+}

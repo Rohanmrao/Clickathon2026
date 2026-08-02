@@ -15,26 +15,39 @@ aggregates to hourly; sklearn only sees the small hourly frame.
 from __future__ import annotations
 
 from datetime import datetime
-from functools import lru_cache
+from functools import cache
 
 import pandas as pd
 from sklearn.ensemble import IsolationForest
 
 from config import config
+from config import hourly_source as _hourly
 from data.calibration import effect_threshold
 from data.client import run_query
 from metrics import metric_sql
 from models import Anomaly, Window
 from rca.robust import pct_delta
 
-_HOURLY = config()["clickhouse"]["hourly_table"]
-
 _PARAM_KEYS = ("n_estimators", "contamination", "random_state", "min_pct_delta")
 
 
-def _seasonal(df: pd.DataFrame) -> pd.Series:
+def _seasonal(df: pd.DataFrame, cutoff=None) -> pd.Series:
+    """Per (weekday, hour) median — the expected value each row is compared against.
+
+    With a cutoff the medians come from HISTORY ONLY. Taken over the whole frame, a streamed
+    hour sits inside its own cell's median and drags its expectation toward itself, shrinking
+    exactly the deviation we are trying to detect.
+    """
     cell = list(zip(df["hour"].dt.dayofweek, df["hour"].dt.hour))
-    return df.assign(_cell=cell).groupby("_cell")["value"].transform("median")
+    framed = df.assign(_cell=cell)
+    everything = framed.groupby("_cell")["value"].transform("median")
+    if cutoff is None:
+        return everything
+    history = framed[framed["hour"] < cutoff]
+    if history.empty:
+        return everything
+    # Cells with no history at all fall back to the all-rows median, so scoring never breaks.
+    return framed["_cell"].map(history.groupby("_cell")["value"].median()).fillna(everything)
 
 
 def _feature_matrix(df: pd.DataFrame, seasonal: pd.Series, mode: str, feature_cols: list[str]) -> pd.DataFrame:
@@ -86,11 +99,11 @@ def _series_sql(metric: str, mode: str, feature_cols: list[str]) -> str:
         cols += [f"{metric_sql(name, 'rollup')} AS {name}" for name in feature_cols]
     # A ratio col like `sum(requests) AS requests` shadows the source column inside other ratios;
     # prefer the column so sum(requests) isn't read as sum(sum(requests)) (illegal nested aggregation).
-    return (f"SELECT hour, {', '.join(cols)} FROM {_HOURLY} GROUP BY hour ORDER BY hour "
+    return (f"SELECT hour, {', '.join(cols)} FROM {_hourly()} GROUP BY hour ORDER BY hour "
             f"SETTINGS prefer_column_name_to_alias = 1")
 
 
-@lru_cache(maxsize=None)
+@cache
 def _cached_series(metric: str, mode: str, feature_cols: tuple[str, ...]) -> tuple[tuple, tuple, str]:
     """The historical series is identical for every target hour scored against the same
     metric+mode — only the query result matters here, not which hour is being tested.
@@ -106,11 +119,48 @@ def _cached_series(metric: str, mode: str, feature_cols: tuple[str, ...]) -> tup
     return tuple(map(tuple, res["rows"])), tuple(res["columns"]), res["resolved_sql"]
 
 
-@lru_cache(maxsize=None)
+@cache
+def fit_cutoff() -> pd.Timestamp | None:
+    """First hour of the TARGET dataset, or None when target and history are the same dataset.
+
+    Rows at/after this hour are streamed data and are excluded from the fit. Without it a
+    streaming run trains the model on the very hours it is about to judge: IsolationForest is
+    unsupervised, so an anomaly present in its training set is learned as normal and stops
+    looking anomalous — the detector quietly grades its own homework.
+
+    Cached: the boundary is fixed for a run (the datasets are disjoint in time), and this is on
+    the per-metric fit path. `reset_cache()` clears it.
+    """
+    from config import baseline_hourly, target_hourly
+
+    target, history = target_hourly(), baseline_hourly()
+    if target == history:
+        return None
+    count, lo = run_query(f"SELECT count(), min(hour) FROM {target}")["rows"][0]
+    return pd.Timestamp(lo) if count else None
+
+
+def frame(metric: str, mode: str, feature_cols: tuple[str, ...]):
+    """(df, features, seasonal, resolved_sql) built from the CURRENT series.
+
+    Rebuilt per call rather than cached alongside the model: in a stream the frame gains an hour
+    every batch, and a cached frame is why streamed hours were reported as "not present in
+    series". The fit stays cached — history does not change — so this costs a DataFrame rebuild,
+    not a refit.
+    """
+    rows, columns, sql = _cached_series(metric, mode, feature_cols)
+    df = pd.DataFrame(list(rows), columns=list(columns))
+    df["hour"] = pd.to_datetime(df["hour"])
+    seasonal = _seasonal(df, fit_cutoff())
+    features = _feature_matrix(df, seasonal, mode, list(feature_cols)).fillna(0.0)
+    return df, features, seasonal, sql
+
+
+@cache
 def _cached_fit(
     metric: str, mode: str, feature_cols: tuple[str, ...],
     n_estimators: int, contamination, random_state: int,
-) -> tuple[IsolationForest, pd.DataFrame, pd.DataFrame, pd.Series]:
+) -> IsolationForest:
     """The FIT is exactly as redundant as the fetch — profiled at ~0.77s, roughly matching the
     ~0.69s DB round trip, so caching only _cached_series left half the waste in place (measured:
     a 10-day sweep dropped from 96s to 60s with data-only caching, not the ~15s a fetch-only fix
@@ -118,13 +168,29 @@ def _cached_fit(
     the fitted model is exactly reusable across every target hour in a sweep — nothing about
     fitting depends on which hour is later being scored.
     """
-    rows, columns, _sql = _cached_series(metric, mode, feature_cols)
-    df = pd.DataFrame(list(rows), columns=list(columns))
-    df["hour"] = pd.to_datetime(df["hour"])
-    seasonal = _seasonal(df)
-    features = _feature_matrix(df, seasonal, mode, list(feature_cols)).fillna(0.0)
-    model = IsolationForest(n_estimators=n_estimators, contamination=contamination, random_state=random_state).fit(features)
-    return model, df, features, seasonal
+    df, features, _seasonal_values, _sql = frame(metric, mode, feature_cols)
+
+    # Fit on history only; score anything. The frame keeps every hour so a streamed target row
+    # is still scoreable, but the model never sees streamed rows while learning what normal is.
+    cutoff = fit_cutoff()
+    train = features[df["hour"] < cutoff] if cutoff is not None else features
+    if train.empty:  # nothing pre-dates the target — fall back rather than fail the detector
+        train = features
+    return IsolationForest(
+        n_estimators=n_estimators, contamination=contamination, random_state=random_state
+    ).fit(train)
+
+
+def invalidate_series() -> None:
+    """Drop the cached SERIES but keep the fitted model.
+
+    A stream adds an hour at a time, so the cached series goes stale immediately and `run()`
+    fails with "target hour not present in series" — measured as 2 successful checks across 19
+    streamed batches, silently skipped. The model deliberately survives: it is fitted on history
+    only (see fit_cutoff), which does not change as the stream advances, so refitting per batch
+    would burn ~0.8s a metric to relearn exactly the same thing.
+    """
+    _cached_series.cache_clear()
 
 
 def reset_cache() -> None:
@@ -132,6 +198,7 @@ def reset_cache() -> None:
     running process — same lifecycle as data.calibration.reset_calibration()."""
     _cached_series.cache_clear()
     _cached_fit.cache_clear()
+    fit_cutoff.cache_clear()
 
 
 def run(metric: str, target: Window) -> tuple[Anomaly, list[dict]]:
@@ -139,8 +206,8 @@ def run(metric: str, target: Window) -> tuple[Anomaly, list[dict]]:
     cfg = config()["detection"]["isolation_forest"]  # read fresh so in-memory overrides take effect
     mode = cfg["features"]
     feature_cols = cfg["feature_columns"]
-    _rows, _columns, resolved_sql = _cached_series(metric, mode, tuple(feature_cols))
-    model, df, features, seasonal = _cached_fit(
+    df, features, seasonal, resolved_sql = frame(metric, mode, tuple(feature_cols))
+    model = _cached_fit(
         metric, mode, tuple(feature_cols),
         cfg["n_estimators"], cfg["contamination"], cfg["random_state"],
     )

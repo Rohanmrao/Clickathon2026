@@ -59,6 +59,7 @@ export interface EvidenceBundle {
 export interface Health {
   ok: boolean;
   engine: "live" | "fixture" | "offline";
+  dataset?: { target: string; history: string };
   langfuse: { enabled: boolean; host: string };
 }
 

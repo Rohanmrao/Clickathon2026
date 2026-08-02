@@ -20,13 +20,21 @@ def get_client():
     """One memoized, pooled client PER THREAD, reused across queries on that thread.
 
     A clickhouse-connect Client cannot run two queries at once — the FastAPI sync endpoints run
-    in a threadpool AND long jobs (seed_bundles, discover, mega, ...) spin up their own background
-    thread (see api/dev.py), so a single process-wide client (the old @lru_cache(maxsize=1))
-    throws "Attempt to execute concurrent queries within the same session" the moment two of those
+    in a threadpool AND long jobs (seed_bundles, discover, mega, the stream replay) spin up their
+    own background thread, so a single process-wide client (the old @lru_cache(maxsize=1)) throws
+    "Attempt to execute concurrent queries within the same session" the moment two of those
     threads query at the same time — e.g. the dashboard's own health poll firing mid-sweep. One
     client per thread keeps the pooling benefit (no fresh TLS handshake per query within a thread)
     while removing the cross-thread collision entirely. Call get_client.cache_clear() to force the
     CURRENT thread to reconnect.
+
+    autogenerate_session_id=False layers on top of that. Per-thread clients already avoid the
+    collision, but the driver otherwise binds each client to its own generated session_id, so a
+    process with many worker threads accumulates that many server-side sessions for no benefit —
+    and any future code that does share a client across threads would resurrect the same error.
+    Nothing here needs session state (no temporary tables, no session-scoped settings).
+    Measured: 8 threads x 6 queries on ONE shared client gives 7 errors with a session bound and
+    0 without.
     """
     client = getattr(_local, "client", None)
     if client is None:
@@ -37,6 +45,7 @@ def get_client():
             password=CLICKHOUSE["password"],
             database=CLICKHOUSE["database"],
             secure=True,
+            autogenerate_session_id=False,
         )
         _local.client = client
     return client

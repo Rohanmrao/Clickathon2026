@@ -70,6 +70,44 @@ FROM events_full
 GROUP BY ALL;
 
 -- ---------------------------------------------------------------------------
+-- Unseen slice (Jul 6-10): its OWN table set, because the dimension CSVs shipped with it
+-- reuse the SAME ids with regenerated attributes -- app_00123 can be finance in June and
+-- gaming in July. Mixing them into the dev tables would silently misattribute segments.
+--
+-- Structure is CLONED from the dev tables (CREATE TABLE ... AS <table> copies columns +
+-- engine + sort order), so the two sets cannot drift apart. Unlike the dev derived tables
+-- these start EMPTY: the stream fills them batch by batch.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS ad_events_unseen        AS ad_events;
+CREATE TABLE IF NOT EXISTS apps_dim_unseen         AS apps_dim;
+CREATE TABLE IF NOT EXISTS advertisers_dim_unseen  AS advertisers_dim;
+CREATE TABLE IF NOT EXISTS geo_device_dim_unseen   AS geo_device_dim;
+CREATE TABLE IF NOT EXISTS events_full_unseen      AS events_full;
+CREATE TABLE IF NOT EXISTS hourly_summary_unseen   AS hourly_summary;
+
+-- What the streaming detector has already looked at: one row per (hour, metric) scored.
+-- A separate table rather than a flag column on hourly_summary_unseen, because that rollup is
+-- a SummingMergeTree -- it SUMS numeric columns on merge, so an `analyzed UInt8` would add up
+-- across parts (1+1=2) instead of staying a flag, and the rollup holds one row per dimension
+-- combination per hour, not one row per analysis. Keyed (hour, metric) so a resumed or
+-- re-run stream can skip what it has already scored, and so "was this hour ever inferred on?"
+-- is answerable in SQL rather than from job memory that dies with the process.
+CREATE TABLE IF NOT EXISTS stream_analysis (
+    hour        DateTime,
+    metric      LowCardinality(String),
+    method      LowCardinality(String),
+    analyzed_at DateTime,
+    detected    UInt8,
+    score       Float64,
+    pct_delta   Float64,
+    observed    Float64,
+    expected    Float64,
+    investigation_id String DEFAULT ''    -- set when a hit produced a full bundle
+) ENGINE = ReplacingMergeTree(analyzed_at)
+ORDER BY (hour, metric);
+
+-- ---------------------------------------------------------------------------
 -- JAL-73: system-of-record tables. ClickHouse stays the single datastore, so
 -- investigation history is queryable in SQL and survives restarts.
 --
