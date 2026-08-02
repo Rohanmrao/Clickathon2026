@@ -65,7 +65,7 @@ LANGFUSE_INIT_USER_PASSWORD=$(get langfuse/init_user_password)
 #                          right on a laptop and wrong on a server: every "Open trace" link a
 #                          judge clicks would point at their own machine.
 #   LANGFUSE_HOST        - container-to-container, set to the service name inside compose.
-LANGFUSE_PUBLIC_HOST=http://${PUBLIC_IP}:3000
+LANGFUSE_PUBLIC_HOST=${LANGFUSE_PUBLIC_HOST:-http://${PUBLIC_IP}:3000}
 LANGFUSE_BASE_URL=http://${PUBLIC_IP}:3000
 
 # Bedrock auth comes from the instance profile - no keys anywhere on this box.
