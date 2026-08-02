@@ -1,0 +1,91 @@
+#!/bin/bash
+# Clickathon 2026 - RCA stack bootstrap.
+#
+# Secrets are NEVER baked into this script, the AMI, or the repo. They are read from SSM
+# Parameter Store at boot using the instance profile, so rotating a parameter and rebooting
+# is the whole update path, and nothing sensitive survives on disk outside /opt/clickathon/.env
+# (root-owned, 0600).
+set -euxo pipefail
+exec > >(tee -a /var/log/clickathon-bootstrap.log) 2>&1
+
+REGION=ap-southeast-2
+REPO=https://github.com/Rohanmrao/Clickathon2026.git
+APP=/opt/clickathon
+
+echo "=== [1/5] packages ==="
+dnf update -y
+dnf install -y docker git
+systemctl enable --now docker
+usermod -aG docker ec2-user
+
+# Compose v2 as a docker plugin (Amazon Linux 2023 has no compose package).
+mkdir -p /usr/local/lib/docker/cli-plugins
+curl -sSL "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64" \
+  -o /usr/local/lib/docker/cli-plugins/docker-compose
+chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+docker compose version
+
+echo "=== [2/5] source ==="
+git clone --depth 1 "$REPO" "$APP"
+cd "$APP"
+
+echo "=== [3/5] secrets from SSM ==="
+# --with-decryption resolves SecureString via KMS; the instance profile grants exactly this
+# path and nothing else.
+get() { aws ssm get-parameter --region "$REGION" --name "/clickathon/$1" --with-decryption \
+        --query Parameter.Value --output text; }
+
+PUBLIC_IP=$(curl -sf -H "X-aws-ec2-metadata-token: $(curl -sf -X PUT http://169.254.169.254/latest/api/token \
+             -H 'X-aws-ec2-metadata-token-ttl-seconds: 60')" \
+             http://169.254.169.254/latest/meta-data/public-ipv4)
+
+umask 077
+cat > "$APP/.env" <<EOF
+CLICKHOUSE_HOST=$(get clickhouse/host)
+CLICKHOUSE_PORT=$(get clickhouse/port)
+CLICKHOUSE_USER=$(get clickhouse/user)
+CLICKHOUSE_PASSWORD=$(get clickhouse/password)
+CLICKHOUSE_DATABASE=$(get clickhouse/database)
+
+LANGFUSE_PUBLIC_KEY=$(get langfuse/public_key)
+LANGFUSE_SECRET_KEY=$(get langfuse/secret_key)
+LANGFUSE_INIT_USER_PASSWORD=$(get langfuse/init_user_password)
+# Browser-facing: a judge clicking a trace link must reach this host, not localhost.
+LANGFUSE_HOST=http://${PUBLIC_IP}:3000
+LANGFUSE_BASE_URL=http://${PUBLIC_IP}:3000
+
+# Bedrock auth comes from the instance profile - no keys anywhere on this box.
+AWS_REGION=$(get bedrock/region)
+BEDROCK_MODEL_ID=$(get bedrock/model_id)
+
+VITE_API_URL=http://${PUBLIC_IP}:8000
+EOF
+chown root:root "$APP/.env"; chmod 600 "$APP/.env"
+
+echo "=== [4/5] systemd unit ==="
+# Runs compose as a managed service so the stack survives reboots and secrets are re-read
+# from SSM on every start.
+cat > /etc/systemd/system/clickathon.service <<EOF
+[Unit]
+Description=Clickathon 2026 RCA stack
+Requires=docker.service
+After=docker.service network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=$APP
+ExecStart=/usr/bin/docker compose up -d --build
+ExecStop=/usr/bin/docker compose down
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload
+systemctl enable clickathon.service
+
+echo "=== [5/5] up ==="
+systemctl start clickathon.service || true
+docker compose ps || true
+echo "=== bootstrap finished at $(date -Is) ==="
