@@ -115,3 +115,49 @@ systemctl restart clickathon          # re-reads SSM
 
 `GET /health` reports whether the RCA engine is live and whether Langfuse is wired, which is the
 fastest way to tell a half-started stack from a working one.
+
+## HTTPS and a custom domain
+
+Live at **https://clickathon.kangasys.com** — dashboard at `/`, API at `/api/`.
+
+nginx terminates TLS on the instance with a Let's Encrypt certificate. No load balancer, so no
+per-hour cost, and certbot installs its own renewal timer.
+
+```bash
+# DNS: an A record for the subdomain -> the instance's public IP (Route 53 zone kangasys.com)
+# Then, on the box:
+sudo dnf install -y nginx certbot python3-certbot-nginx
+sudo cp deploy/nginx-clickathon.conf /etc/nginx/conf.d/clickathon.conf   # strip the 443 block first
+sudo systemctl enable --now nginx
+sudo certbot --nginx -d clickathon.kangasys.com --redirect \
+     --non-interactive --agree-tos -m you@example.com
+```
+
+Certbot writes the TLS listener and certificate paths into the config itself, so stage only the
+port-80 server block and let it add the rest.
+
+### Two settings that matter
+
+**Proxy timeouts.** An investigation runs 20–60 ClickHouse queries plus an LLM call. nginx's
+default 60-second `proxy_read_timeout` cuts that off and returns 504 for a request that was
+about to succeed. The config sets 300s.
+
+**`proxy_buffering off`.** Chat streams as SSE; with buffering on, nginx holds every token until
+the response completes and the stream arrives as one lump.
+
+### Why Langfuse and LibreChat keep their ports
+
+Both are single-page apps that assume they are served from the root of a host. Behind a subpath
+they emit absolute asset URLs that miss the prefix and 404. Rewriting that reliably means
+patching vendored build config, which is not worth it here — so they stay on `:3000` and `:3080`
+over plain HTTP, while the dashboard and API get the domain and certificate.
+
+`LANGFUSE_PUBLIC_HOST` therefore points at `http://clickathon.kangasys.com:3000`, so a judge
+clicking "Open trace" lands on a reachable page.
+
+### After a stop/start
+
+The instance has **no Elastic IP** (the account is at its allocation limit), so stopping it
+changes the public IP and breaks both the A record and `LANGFUSE_PUBLIC_HOST`. Reboot is safe;
+stop/start is not. If it happens, update the Route 53 record and the two URLs in
+`/opt/clickathon/.env`, then rebuild the frontend — `VITE_API_URL` is baked at build time.
