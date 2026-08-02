@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { getBundle, getHealth, getTrace, listBundles, listIncidents, startRangeInvestigation, waitForRangeInvestigation, type IncidentRow } from "./api";
+import { getBundle, getHealth, getSeries, getTrace, listBundles, listIncidents, startRangeInvestigation, waitForRangeInvestigation, type IncidentRow, type SeriesPoint } from "./api";
 import sampleBundle from "./sample_bundle.json";
 import { AnomalyCard } from "./components/AnomalyCard";
 import { DiagnosisCard } from "./components/DiagnosisCard";
@@ -8,7 +8,6 @@ import { MetricTree } from "./components/MetricTree";
 import { RuledOutPanel } from "./components/RuledOutPanel";
 import { SidebarDock } from "./components/SidebarDock";
 import { TraceDrawer } from "./components/TraceDrawer";
-import { SweepDrawer } from "./components/SweepDrawer";
 import { ClickathonMark } from "./components/ClickathonMark";
 import { DateField } from "./components/DateField";
 import type { EvidenceBundle, InvestigationRow } from "./types";
@@ -18,7 +17,6 @@ const TRACE_SNAPSHOT_DELAY_MS = 10000;
 // Engine status is a live condition, so re-poll it rather than trusting page load.
 const HEALTH_POLL_MS = 30000;
 
-const METRICS = ["revenue", "fill_rate", "ecpm", "requests", "ctr", "rpr", "render_rate"];
 
 function incidentLabel(row: IncidentRow): string {
   const date = row.window_start?.slice(5, 10) ?? "";
@@ -46,12 +44,12 @@ export default function App() {
   const [theme, setTheme] = useState<"dark" | "light">(
     () => (localStorage.getItem("rca-theme") as "dark" | "light") || "dark"
   );
-  const [metric, setMetric] = useState<string>((sampleBundle as EvidenceBundle).metric || "revenue");
   const [winStart, setWinStart] = useState("");
   const [winEnd, setWinEnd] = useState("");
   const [history, setHistory] = useState<InvestigationRow[]>([]);
   const [traceOpen, setTraceOpen] = useState(false);
-  const [sweepOpen, setSweepOpen] = useState(false);
+  const [series, setSeries] = useState<SeriesPoint[] | undefined>(undefined);
+  const [seriesLoading, setSeriesLoading] = useState(false);
   const timer = useRef<number | undefined>(undefined);
 
   // Theme lives on <body> so page backgrounds (not just cards) follow variables-final.css.
@@ -62,6 +60,31 @@ export default function App() {
     document.body.style.colorScheme = theme;
     localStorage.setItem("rca-theme", theme);
   }, [theme]);
+
+  // Real 24h actual-vs-expected series for the anomaly card. Keyed on the shown bundle; when the
+  // backend can't serve it (offline, or a sample bundle not in the store) series stays undefined
+  // and the card renders its synthetic fallback. `seriesLoading` gates the synthetic curve so a
+  // bundle switch shows a blank skeleton while the fetch is in flight, instead of flashing the
+  // fake curve for a frame. Guarded against a stale response overwriting a newer bundle's series.
+  useEffect(() => {
+    const id = bundle.investigation_id;
+    if (!id) { setSeries(undefined); setSeriesLoading(false); return; }
+    let cancelled = false;
+    setSeries(undefined);
+    setSeriesLoading(true);
+    getSeries(id).then((s) => {
+      if (!cancelled) { setSeries(s?.points); setSeriesLoading(false); }
+    });
+    return () => { cancelled = true; };
+  }, [bundle.investigation_id]);
+
+  // Localization strength: how much of the GLOBAL delta the culprit segment explains, i.e. the
+  // product of each drill-down step's share of its parent's delta. Replaces the old
+  // min(0.99, |z|/5), which saturated at 0.99 for every real anomaly (z-scores run into the tens
+  // and hundreds). Undefined when nothing localized (population-wide move, empty drill-down).
+  const localizationConfidence = bundle.drilldown.length
+    ? Math.min(1, bundle.drilldown.reduce((acc, n) => acc * Math.abs(n.contribution_pct ?? 0), 1))
+    : undefined;
 
   const fd = bundle.factor_decomposition;
   const depth = bundle.drilldown.length + 1; // + root
@@ -98,7 +121,6 @@ export default function App() {
     getBundle(id).then((b) => {
       if (b) {
         setBundle(b);
-        setMetric(b.metric);
         setSource("live");
         setStep(99);
       }
@@ -154,7 +176,6 @@ export default function App() {
         if (b) {
           setBundle(b);
           setSelectedId(showId);
-          setMetric(b.metric);
           setSource("live");
           revealSteps(b);
         }
@@ -175,7 +196,6 @@ export default function App() {
       window.clearInterval(timer.current);
       setBundle(b);
       setSelectedId(id);
-      setMetric(b.metric);
       setSource("live");
       setRunning(false);
       setStep(99);
@@ -240,23 +260,19 @@ export default function App() {
           </button>
           <span className="status-pill"><span className="live-dot" /> {engineLabel}</span>
           <div className="controls">
-            <select value={metric} onChange={(e) => setMetric(e.target.value)} aria-label="Metric">
-              {METRICS.map((m) => <option key={m} value={m}>{m}</option>)}
-            </select>
             <DateField value={winStart} onChange={setWinStart} aria-label="Window start" />
             <DateField value={winEnd} onChange={setWinEnd} aria-label="Window end" />
           </div>
           {selectedId && (
             <button className="ghost-btn" onClick={() => setTraceOpen(true)}>Open trace</button>
           )}
-          <button className="ghost-btn" onClick={() => setSweepOpen(true)}>Find anomalies</button>
           <button
             className="primary-btn"
             onClick={() => run()}
             disabled={running || !winStart || !winEnd}
             title={!winStart || !winEnd ? "Pick a start and end date first" : undefined}
           >
-            {running ? "Investigating…" : "Investigate"}
+            {running ? "Finding anomalies…" : "Find Anomalies"}
           </button>
         </div>
       </header>
@@ -274,8 +290,11 @@ export default function App() {
           <AnomalyCard
             metric={bundle.metric}
             anomaly={bundle.anomaly}
-            confidence={bundle.anomaly.score ? Math.min(0.99, Math.abs(bundle.anomaly.score) / 5) : undefined}
+            confidence={localizationConfidence}
             running={running}
+            window={bundle.target_window}
+            series={series}
+            seriesLoading={seriesLoading}
           />
           <div
             className={`split-row active-${activePanel}`}
@@ -346,20 +365,6 @@ export default function App() {
           <SidebarDock history={history} onOpenRun={openRun} onRefresh={refreshHistory} segOf={segOf} bundleId={selectedId} />
         </aside>
       </main>
-
-      <SweepDrawer
-        open={sweepOpen}
-        onClose={() => setSweepOpen(false)}
-        start={winStart}
-        end={winEnd}
-        onInvestigate={(m, ws, we) => {
-          setSweepOpen(false);
-          setMetric(m);
-          setWinStart(ws.slice(0, 10));
-          setWinEnd(we.slice(0, 10));
-          run({ start: ws, end: we });
-        }}
-      />
 
       <TraceDrawer
         investigationId={selectedId}
