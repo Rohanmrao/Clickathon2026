@@ -35,10 +35,16 @@ export interface RuledOut {
   query_id: string;
 }
 
+export interface Window {
+  start: string;
+  end: string;
+}
+
 export interface EvidenceBundle {
   investigation_id: string;
   created_at: string;
   metric: string;
+  target_window?: Window;
   anomaly: Anomaly;
   factor_decomposition: { method: string; primary_factor: string; factors: Factor[] };
   drilldown: DrilldownNode[];

@@ -1,31 +1,12 @@
 import type { EvidenceBundle, Health, InvestigationRow } from "./types";
-import sampleBundle from "./sample_bundle.json";
 
 const API = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
 
-export interface InvestigateResult {
-  bundle: EvidenceBundle;
-  live: boolean; // false => the backend was unreachable and we fell back to the bundled sample
-}
-
-/** Run an investigation. Returns the bundle WITHOUT a narrative (that's the second step, narrate()).
- *  Fixtures-first: if the API is unreachable we fall back to the sample so the UI always renders. */
-export async function investigate(
-  metric = "revenue",
-  window?: { start: string; end: string },
-): Promise<InvestigateResult> {
-  try {
-    const res = await fetch(`${API}/investigate`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ metric, window: window ?? null }),
-    });
-    if (!res.ok) throw new Error(String(res.status));
-    return { bundle: (await res.json()) as EvidenceBundle, live: true };
-  } catch {
-    return { bundle: sampleBundle as EvidenceBundle, live: false };
-  }
-}
+// NOTE: there is deliberately no `investigate()` helper here anymore. It POSTed /investigate and,
+// on any failure, returned fixtures/sample_bundle.json — invented numbers rendered as though they
+// were a real diagnosis. The dashboard's Investigate button drives the seed flow
+// (startRangeInvestigation) instead, and an empty dashboard now says so rather than showing a
+// sample. Don't reintroduce a fixture fallback: showing fake evidence is worse than showing none.
 
 /** Add prose to a stored investigation. Returns the narrated bundle, or null if narration is
  *  unavailable (no LLM creds / Bedrock down) — the numbers are already complete either way. */
@@ -88,7 +69,12 @@ export interface IncidentRow {
   narrated: number;
 }
 
-export async function listIncidents(limit = 50): Promise<IncidentRow[]> {
+// Fetch a wide window, not just the latest N: the feed is dominated by detection-only bundles
+// (chat/scan runs persist a `pending` row per check), and only a handful are fully investigated.
+// With a small limit those few get crowded out entirely, the switcher comes back empty, and the
+// dashboard silently falls back to the bundled sample. 200 comfortably covers the store today;
+// the real anomalies are what we filter TO, so over-fetching pending rows is cheap.
+export async function listIncidents(limit = 200): Promise<IncidentRow[]> {
   try {
     const res = await fetch(`${API}/dashboard?limit=${limit}`);
     if (!res.ok) throw new Error(String(res.status));
@@ -162,6 +148,33 @@ export async function waitForRangeInvestigation(
     await new Promise((r) => setTimeout(r, intervalMs));
   }
   return null;
+}
+
+// One hour bucket behind the anomaly card's chart. `actual`/`expected` are null when that
+// hour has no data (empty bucket, or segment younger than the baseline window).
+export interface SeriesPoint {
+  hour: string; // ISO, start of the hour (UTC)
+  actual: number | null;
+  expected: number | null;
+}
+
+export interface AnomalySeries {
+  metric: string;
+  scope: string; // "global" — matches the card's population-wide headline
+  points: SeriesPoint[];
+}
+
+/** The real 24h actual-vs-expected series for a stored anomaly. Returns null when the backend
+ *  is unreachable or the investigation isn't in the store (sample/offline) — the card then
+ *  falls back to its synthetic curve so it always renders. */
+export async function getSeries(investigationId: string): Promise<AnomalySeries | null> {
+  try {
+    const res = await fetch(`${API}/series/${investigationId}`);
+    if (!res.ok) return null;
+    return (await res.json()) as AnomalySeries;
+  } catch {
+    return null;
+  }
 }
 
 // Dashboard chat: talks to our own OpenAI-shaped endpoint, carrying the showcased

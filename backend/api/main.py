@@ -29,6 +29,7 @@ from data import store
 from data.client import clickhouse_available
 from models import EvidenceBundle, Window
 from narrator import narrate, trace_read
+from rca import series
 
 app = FastAPI(title="Automated Root-Cause Analyst")
 app.add_middleware(
@@ -88,16 +89,16 @@ def set_dataset(req: DatasetRequest) -> dict:
 
 @app.post("/investigate", response_model=EvidenceBundle)
 def investigate(req: InvestigateRequest) -> EvidenceBundle:
-    """Run an investigation, persist the bundle, and return it WITHOUT a narrative.
+    """Run an investigation and return it WITHOUT a narrative. Never writes to `bundles`.
 
-    This is the ONE non-seed path that may write to `bundles` — it is the dashboard's
-    Investigate button. No other API endpoint passes persist=True; the chat path and all
-    other callers stay at the default False.
-
-    No LLM sits in this path, so a judge can call it twice and diff the result to verify
-    reproducibility. Narration is POST /narrate/{id}.
+    `bundles` is seed-path-only — dev.py's seed_bundles/seed_context are the only writers.
+    The dashboard's Investigate button now drives POST /dev/seed_bundles, not this endpoint, so
+    this stays a pure compute-and-return: no LLM in the path, so a judge (or anyone) can call it
+    twice and diff the result to verify reproducibility, without side effects on the stored
+    anomaly history. Narration is POST /narrate/{id} (also non-persisting unless explicitly
+    asked, which nothing does).
     """
-    bundle = pipeline.run_investigation(req.metric, req.window, persist=True)
+    bundle = pipeline.run_investigation(req.metric, req.window, persist=False)
     # Mirror the segment-scope override from dev.py seed_bundles: if global detection
     # didn't fire but localization found a segment, the anomaly is real — promote it.
     if not bundle.anomaly.detected and bundle.localized_segment:
@@ -153,6 +154,24 @@ def list_bundles(limit: int = 50) -> dict:
         return {"count": 0, "investigations": [], "engine": "offline"}
     rows = store.list_investigations(limit)
     return {"count": len(rows), "investigations": rows, "engine": "live"}
+
+
+@app.get("/series/{investigation_id}")
+def get_series(investigation_id: str) -> dict:
+    """Hourly actual-vs-expected series behind the anomaly card's chart.
+
+    The metric in 1-hour chunks over the 24 hours ending at the anomaly, plus the like-for-like
+    expected line — population-wide (global), to match the card's headline % and observed/expected.
+    The two SQL queries are logged to the investigation's trace like every other number shown.
+
+    Fails soft: an unreachable datastore returns 503, a missing investigation 404.
+    """
+    if not clickhouse_available():
+        raise HTTPException(status_code=503, detail="Investigation store offline (check CLICKHOUSE_*)")
+    bundle = store.load_bundle(investigation_id)
+    if bundle is None:
+        raise HTTPException(status_code=404, detail=f"No investigation {investigation_id!r}")
+    return series.hourly_series(bundle)
 
 
 @app.get("/trace/{investigation_id}")
@@ -285,11 +304,14 @@ def _run_investigation(
 ) -> EvidenceBundle:
     """Real detection (statistical/ML) for the bundle, then trace-reattached narration.
 
-    `pipeline.run_detection` runs REAL ClickHouse detection via the chosen method and persists an
-    un-narrated bundle; `pipeline.narrate_investigation` then adds prose whose generation span
-    reattaches to the same trace. The two-step split (JAL-80) means a Bedrock failure costs the
-    sentence, not the whole scoreable bundle. session_id groups the conversation's traces in
-    Langfuse; segment localization awaits Lane B's decompose/drill.
+    Computed and returned, NEVER persisted: `bundles` is seed-path-only (dev.py's seed_bundles /
+    seed_context are its only writers), so neither call below passes persist=True. A chat answer
+    must not add rows to the stored anomaly history — asking a question is not an investigation
+    of record. `narrate_investigation` therefore finds nothing to load and returns None, which
+    the `or bundle` fallback handles; that is the designed path, not a failure.
+
+    session_id groups the conversation's traces in Langfuse; segment localization awaits
+    Lane B's decompose/drill.
     """
     window = Window(start=slots.window_start, end=slots.window_end or slots.window_start)
     bundle = pipeline.run_detection(
