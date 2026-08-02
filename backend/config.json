@@ -29,7 +29,7 @@
   },
   "detection": {
     "grain": "hour",
-    "method": "robust_z",
+    "method": "isolation_forest",
     "mad_scale": 1.4826,
     "baseline_method": "same_weekday_trailing_weeks",
     "baseline_weeks": 3,

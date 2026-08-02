@@ -3,8 +3,9 @@
 Selects a detector strategy from config.detection.method and delegates. Every detector returns the
 identical (Anomaly, queries) contract, so everything downstream is agnostic to which one ran.
 
-  * robust_z    — deterministic like-for-like baseline (median/MAD over trailing weeks). Default.
-  * seasonal_ml — unsupervised seasonal-residual model over all history.
+  * robust_z         — deterministic like-for-like baseline (median/MAD over trailing weeks).
+  * seasonal_ml      — unsupervised seasonal-residual model over all history.
+  * isolation_forest — unsupervised sklearn IsolationForest over engineered features. Default.
 
 `detect()` scores the GLOBAL aggregate. `detect_in_window()` adds the segment pass, and that
 distinction is load-bearing — see its docstring.

@@ -208,7 +208,7 @@ def test_scan_starts_a_background_job(client, monkeypatch):
     payload = client.post("/scan", json={"start": "2026-06-01", "end": "2026-06-30"}).json()
 
     assert payload["job_id"] == "job-1"
-    assert seen["start"] == "2026-06-01" and seen["method"] == "robust_z"
+    assert seen["start"] == "2026-06-01" and seen["method"] == "isolation_forest"
 
 
 def test_scan_status_is_polled_by_job_id(client, monkeypatch):

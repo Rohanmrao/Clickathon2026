@@ -192,7 +192,7 @@ def localize(metric: str, start: str, end: str) -> dict:
 
 
 def discover(start: str, end: str, grain: str = "day", scope: str = "both", min_effect: float = 0.0,
-            method: str = "robust_z") -> dict:
+            method: str = "isolation_forest") -> dict:
     """Find anomalies in an ARBITRARY window — no ground-truth case list involved.
 
     This is what the fixed benchmark cases can't do: point it at any date range (e.g. the
@@ -421,7 +421,7 @@ def _bundle_exists(metric: str, window: Window) -> bool:
     return bool(rows)
 
 
-def seed_bundles(start: str, end: str, method: str = "robust_z") -> dict:
+def seed_bundles(start: str, end: str, method: str = "isolation_forest") -> dict:
     """Run discover, then a FULL investigation (decompose + drill + narrate + persist) for each
     primary incident — one Evidence Bundle per real anomaly, stored in `bundles` for the
     dashboard's anomaly switcher. Echo/secondary rows are skipped: they are the same underlying
@@ -432,7 +432,12 @@ def seed_bundles(start: str, end: str, method: str = "robust_z") -> dict:
     fresh ids for events already seeded, it only fills in genuinely new findings."""
     from api import pipeline as pipe
 
-    found = discover(start, end, method=method)
+    try:
+        found = discover(start, end, method=method)
+    except Exception as exc:  # noqa: BLE001 — a failed sweep must surface, not vanish as a bare job error
+        return {"seeded": 0, "errors": 1, "already_present": 0, "echoes_skipped": 0,
+                "bundles": [{"error": f"sweep failed before any incident could be investigated: {exc}"}]}
+
     seeded, skipped, already_present = [], 0, 0
     for row in found["incidents"]:
         if row["role"] != "primary":
@@ -475,7 +480,7 @@ def seed_bundles(start: str, end: str, method: str = "robust_z") -> dict:
             "already_present": already_present, "echoes_skipped": skipped, "bundles": seeded}
 
 
-def start_seed_job(start: str, end: str, method: str = "robust_z") -> dict:
+def start_seed_job(start: str, end: str, method: str = "isolation_forest") -> dict:
     """8+ full investigations (each: detect + decompose + drill + LLM narrate) takes minutes —
     background job like /discover; poll /dev/jobs/{id}."""
     job_id = uuid4().hex[:8]
@@ -560,7 +565,7 @@ def start_seed_context_job(days_before: int = 3, days_after: int = 3) -> dict:
 
 
 def start_discover_job(start: str, end: str, grain: str, scope: str, min_effect: float,
-                       method: str = "robust_z") -> dict:
+                       method: str = "isolation_forest") -> dict:
     """A full segment sweep is ~50 queries (a metric x dimension pass each), so run it in the
     background like /mega rather than holding the request open."""
     job_id = uuid4().hex[:8]
@@ -570,7 +575,7 @@ def start_discover_job(start: str, end: str, grain: str, scope: str, min_effect:
 
 
 def _run_discover_job(job_id: str, start: str, end: str, grain: str, scope: str, min_effect: float,
-                      method: str = "robust_z") -> None:
+                      method: str = "isolation_forest") -> None:
     try:
         result = discover(start, end, grain, scope, min_effect, method)
         _JOBS[job_id].update(status="done", finished=True, result=result,
@@ -698,7 +703,7 @@ class DiscoverReq(BaseModel):
     localization is unaffected — see discover()'s docstring for why."""
     start: str = "2026-06-01"
     end: str = "2026-07-06"
-    method: str = "robust_z"
+    method: str = "isolation_forest"
 
 
 @router.post("/seed_bundles")

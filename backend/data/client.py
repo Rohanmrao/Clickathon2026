@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
-from functools import lru_cache
 from typing import Any
 
 import clickhouse_connect
@@ -13,23 +13,40 @@ from obs import langfuse
 
 log = logging.getLogger(__name__)
 
+_local = threading.local()
 
-@lru_cache(maxsize=1)
+
 def get_client():
-    """One memoized, pooled client reused across all queries.
+    """One memoized, pooled client PER THREAD, reused across queries on that thread.
 
-    clickhouse-connect clients hold an internal (thread-safe) connection pool, so reusing a single
-    client avoids a fresh TLS handshake per query — the dominant cost when firing many small queries
-    (e.g. the benchmarker). Call get_client.cache_clear() to force a reconnect.
+    A clickhouse-connect Client cannot run two queries at once — the FastAPI sync endpoints run
+    in a threadpool AND long jobs (seed_bundles, discover, mega, ...) spin up their own background
+    thread (see api/dev.py), so a single process-wide client (the old @lru_cache(maxsize=1))
+    throws "Attempt to execute concurrent queries within the same session" the moment two of those
+    threads query at the same time — e.g. the dashboard's own health poll firing mid-sweep. One
+    client per thread keeps the pooling benefit (no fresh TLS handshake per query within a thread)
+    while removing the cross-thread collision entirely. Call get_client.cache_clear() to force the
+    CURRENT thread to reconnect.
     """
-    return clickhouse_connect.get_client(
-        host=CLICKHOUSE["host"],
-        port=CLICKHOUSE["port"],
-        username=CLICKHOUSE["username"],
-        password=CLICKHOUSE["password"],
-        database=CLICKHOUSE["database"],
-        secure=True,
-    )
+    client = getattr(_local, "client", None)
+    if client is None:
+        client = clickhouse_connect.get_client(
+            host=CLICKHOUSE["host"],
+            port=CLICKHOUSE["port"],
+            username=CLICKHOUSE["username"],
+            password=CLICKHOUSE["password"],
+            database=CLICKHOUSE["database"],
+            secure=True,
+        )
+        _local.client = client
+    return client
+
+
+def _clear_client_cache() -> None:
+    _local.client = None
+
+
+get_client.cache_clear = _clear_client_cache
 
 
 def clickhouse_available() -> bool:

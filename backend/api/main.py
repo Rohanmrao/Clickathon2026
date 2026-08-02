@@ -161,7 +161,7 @@ class ScanRequest(BaseModel):
     detection dial to get an answer; `method` picks the detector for the global pass."""
     start: str
     end: str
-    method: str = "robust_z"
+    method: str = "isolation_forest"
 
 
 @app.post("/scan")

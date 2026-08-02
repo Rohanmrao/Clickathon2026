@@ -106,6 +106,64 @@ export async function listIncidents(limit = 50): Promise<IncidentRow[]> {
   }
 }
 
+// Windowed investigate = the dev "find anomalies → seed" flow: discover every anomaly in the
+// range, run the full pipeline (detect + decompose + drill + narrate) per primary incident, and
+// persist each to `bundles`. Runs server-side as a background job — start it, then poll.
+export interface SeedResult {
+  seeded: number;
+  errors: number;
+  already_present: number;
+  echoes_skipped: number;
+  bundles: Array<{
+    investigation_id?: string;
+    metric: string;
+    window: string;
+    detected?: boolean;
+    localized?: Record<string, string>;
+    skipped?: string;
+    error?: string;
+  }>;
+}
+
+export async function startRangeInvestigation(
+  start: string,
+  end: string,
+): Promise<string | null> {
+  try {
+    const res = await fetch(`${API}/dev/seed_bundles`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ start, end }),
+    });
+    if (!res.ok) return null;
+    return ((await res.json()) as { job_id: string }).job_id ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Poll the background job until it finishes; resolves with the seed result (or null on error). */
+export async function waitForRangeInvestigation(
+  jobId: string,
+  intervalMs = 3000,
+  timeoutMs = 15 * 60 * 1000,
+): Promise<SeedResult | null> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(`${API}/dev/jobs/${jobId}`);
+      if (res.ok) {
+        const j = await res.json();
+        if (j.finished) return j.status === "done" ? (j.result as SeedResult) : null;
+      }
+    } catch {
+      // transient network blip — keep polling until the deadline
+    }
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+  return null;
+}
+
 // Dashboard chat: talks to our own OpenAI-shaped endpoint, carrying the showcased
 // anomaly's bundle id so "this anomaly" resolves to what's on screen.
 export interface ChatTurn {
@@ -188,7 +246,7 @@ export interface ScanJob {
   result?: { count: number; primary_count: number; incidents: ScanIncident[] };
 }
 
-export async function startScan(start: string, end: string, method = "robust_z"): Promise<string | null> {
+export async function startScan(start: string, end: string, method = "isolation_forest"): Promise<string | null> {
   try {
     const res = await fetch(`${API}/scan`, {
       method: "POST",
