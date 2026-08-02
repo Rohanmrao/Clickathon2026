@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 import uuid
-
 from datetime import datetime
 
 from fastapi import FastAPI, Header, HTTPException
@@ -28,6 +27,7 @@ from config import LANGFUSE
 from data import store
 from data.client import clickhouse_available
 from models import EvidenceBundle, Window
+from narrator import trace_read
 
 app = FastAPI(title="Automated Root-Cause Analyst")
 app.add_middleware(
@@ -120,6 +120,20 @@ def list_bundles(limit: int = 50) -> dict:
         return {"count": 0, "investigations": [], "engine": "offline"}
     rows = store.list_investigations(limit)
     return {"count": len(rows), "investigations": rows, "engine": "live"}
+
+
+@app.get("/trace/{investigation_id}")
+def get_trace(investigation_id: str) -> dict:
+    """The investigation's Langfuse trace, reshaped as a readable timeline for the dashboard.
+
+    The Langfuse UI itself is developer-facing; this is the customer view — one step per phase
+    with a plain-language headline and the SQL behind it. Always 200: a missing trace or an
+    unreachable Langfuse comes back as `available: false` with a reason, which the drawer shows.
+    """
+    if not clickhouse_available():
+        return {"available": False, "reason": "Investigation store offline (check CLICKHOUSE_*)"}
+    trace_id, _ = store.load_meta(investigation_id)
+    return trace_read.trace_view(trace_id)
 
 
 @app.get("/dashboard")
