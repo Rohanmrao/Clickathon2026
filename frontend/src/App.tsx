@@ -8,6 +8,7 @@ import { MetricTree } from "./components/MetricTree";
 import { RuledOutPanel } from "./components/RuledOutPanel";
 import { SidebarDock } from "./components/SidebarDock";
 import { TraceDrawer } from "./components/TraceDrawer";
+import { SweepDrawer } from "./components/SweepDrawer";
 import { ClickathonMark } from "./components/ClickathonMark";
 import { DateField } from "./components/DateField";
 import type { EvidenceBundle, InvestigationRow } from "./types";
@@ -45,6 +46,7 @@ export default function App() {
   const [winEnd, setWinEnd] = useState("");
   const [history, setHistory] = useState<InvestigationRow[]>([]);
   const [traceOpen, setTraceOpen] = useState(false);
+  const [sweepOpen, setSweepOpen] = useState(false);
   const timer = useRef<number | undefined>(undefined);
 
   // Theme lives on <body> so page backgrounds (not just cards) follow variables-final.css.
@@ -109,10 +111,13 @@ export default function App() {
   // Run: investigate (numbers) -> reveal drill-down -> narrate (prose arrives after, per the
   // investigate/narrate split). A window is sent only if both dates are set, else the backend
   // discovers the anomalous window itself.
-  const run = async () => {
+  const run = async (
+    forMetric: string = metric,
+    win: { start: string; end: string } | undefined =
+      winStart && winEnd ? { start: `${winStart}T00:00:00`, end: `${winEnd}T00:00:00` } : undefined,
+  ) => {
     setRunning(true);
-    const win = winStart && winEnd ? { start: `${winStart}T00:00:00`, end: `${winEnd}T00:00:00` } : undefined;
-    const { bundle: b, live } = await investigate(metric, win);
+    const { bundle: b, live } = await investigate(forMetric, win);
     setBundle(b);
     setSelectedId(b.investigation_id || null);
     setSource(live ? "live" : "fixture");
@@ -207,7 +212,8 @@ export default function App() {
           {selectedId && (
             <button className="ghost-btn" onClick={() => setTraceOpen(true)}>Open trace</button>
           )}
-          <button className="primary-btn" onClick={run} disabled={running}>
+          <button className="ghost-btn" onClick={() => setSweepOpen(true)}>Find anomalies</button>
+          <button className="primary-btn" onClick={() => run()} disabled={running}>
             {running ? "Investigating…" : "Investigate"}
           </button>
         </div>
@@ -298,6 +304,18 @@ export default function App() {
           <SidebarDock history={history} onOpenRun={openRun} onRefresh={refreshHistory} segOf={segOf} bundleId={selectedId} />
         </aside>
       </main>
+
+      <SweepDrawer
+        open={sweepOpen}
+        onClose={() => setSweepOpen(false)}
+        start={winStart}
+        end={winEnd}
+        onInvestigate={(m, ws, we) => {
+          setSweepOpen(false);
+          setMetric(m);
+          run(m, { start: ws, end: we });
+        }}
+      />
 
       <TraceDrawer
         investigationId={selectedId}

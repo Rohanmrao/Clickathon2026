@@ -163,3 +163,51 @@ export async function getTrace(investigationId: string): Promise<TraceView> {
     return { available: false, reason: "Backend unreachable" };
   }
 }
+
+// Anomaly sweep over an arbitrary window — no case list, it finds them itself. A full sweep is
+// ~50 queries, so the backend runs it as a job: start it, then poll until finished.
+export interface ScanIncident {
+  incident_id: string;
+  metric: string;
+  window_start: string;
+  window_end: string;
+  direction: string;
+  peak_pct_delta: number;
+  peak_z: number;
+  score: number;
+  role: string; // "primary" | "echo"
+  scope?: string; // "global" | "segment"
+  echo_of?: string;
+  localized?: Record<string, string> | { error: string };
+}
+
+export interface ScanJob {
+  status: string;
+  finished: boolean;
+  log?: string;
+  result?: { count: number; primary_count: number; incidents: ScanIncident[] };
+}
+
+export async function startScan(start: string, end: string, method = "robust_z"): Promise<string | null> {
+  try {
+    const res = await fetch(`${API}/scan`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ start, end, method }),
+    });
+    if (!res.ok) return null;
+    return (await res.json()).job_id ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export async function scanStatus(jobId: string): Promise<ScanJob | null> {
+  try {
+    const res = await fetch(`${API}/scan/${jobId}`);
+    if (!res.ok) return null;
+    return (await res.json()) as ScanJob;
+  } catch {
+    return null;
+  }
+}

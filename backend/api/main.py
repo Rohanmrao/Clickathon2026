@@ -132,8 +132,46 @@ def get_trace(investigation_id: str) -> dict:
     """
     if not clickhouse_available():
         return {"available": False, "reason": "Investigation store offline (check CLICKHOUSE_*)"}
+
+    # Snapshot first: Langfuse owns the live trace, we own the history. Cached on first
+    # successful read rather than at investigation time, because Langfuse ingests spans
+    # asynchronously — the trace is not complete the instant the investigation returns.
+    stored = store.load_trace_view(investigation_id)
+    if stored:
+        return {**stored, "source": "stored"}
+
     trace_id, _ = store.load_meta(investigation_id)
-    return trace_read.trace_view(trace_id)
+    view = trace_read.trace_view(trace_id)
+    if view.get("available"):
+        store.save_trace_view(investigation_id, view)
+    return {**view, "source": "live"}
+
+
+class ScanRequest(BaseModel):
+    """Window to sweep. Grain/scope/sensitivity stay server-side — nobody should have to tune a
+    detection dial to get an answer; `method` picks the detector for the global pass."""
+    start: str
+    end: str
+    method: str = "robust_z"
+
+
+@app.post("/scan")
+def start_scan(req: ScanRequest) -> dict:
+    """Sweep an ARBITRARY window for anomalies — no ground-truth case list, it finds them itself.
+
+    This is the unseen-incident path: point it at a date range and it scans every metric
+    globally plus every value of every dimension, folds echoes of the same underlying event,
+    and localizes the top findings. A full sweep is ~50 queries, so it runs as a background
+    job — poll GET /scan/{job_id}.
+    """
+    return dev.start_discover_job(req.start, req.end, grain="day", scope="both",
+                                  min_effect=0.0, method=req.method)
+
+
+@app.get("/scan/{job_id}")
+def scan_status(job_id: str) -> dict:
+    """Poll a sweep. `finished` flips true, then `result.incidents` holds the findings."""
+    return dev.job_status(job_id)
 
 
 @app.get("/dashboard")

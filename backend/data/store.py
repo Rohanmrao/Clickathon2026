@@ -22,7 +22,9 @@ bookkeeping should not appear as analysis spans inside an investigation trace.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+import logging
+from datetime import UTC, datetime
+from functools import lru_cache
 from typing import Any
 
 from data.client import get_client
@@ -32,6 +34,9 @@ BUNDLES = "bundles"
 INVESTIGATIONS = "investigations"
 SESSIONS = "chat_sessions"
 TURNS = "chat_turns"
+TRACE_VIEWS = "trace_views"
+
+log = logging.getLogger(__name__)
 
 _BUNDLE_COLUMNS = [
     "investigation_id", "created_at", "updated_at", "window_start", "window_end",
@@ -47,7 +52,7 @@ _INVESTIGATION_COLUMNS = [
 
 def _now() -> datetime:
     # ClickHouse DateTime is naive; store UTC without tzinfo so round-trips compare equal.
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 def _naive(dt: datetime) -> datetime:
@@ -263,3 +268,45 @@ def delete_all_sessions() -> int:
     for table in (SESSIONS, TURNS):
         client.command(f"TRUNCATE TABLE {table}")
     return count
+
+
+# ---- trace snapshots -------------------------------------------------------
+#
+# Langfuse owns the LIVE trace; this owns the HISTORY. The drawer reads the snapshot first, so
+# a trace stays readable after Langfuse is reset, wiped (`docker compose down -v`) or is simply
+# down — which is exactly how the "Trace not found" dead links happened.
+
+@lru_cache(maxsize=1)
+def _ensure_trace_views() -> None:
+    """Create the snapshot table on demand, from schema.sql so there is one source of truth.
+
+    Created here rather than requiring a manual DDL step: the table arrived after the initial
+    schema, and `CREATE TABLE IF NOT EXISTS` in schema.sql never runs itself.
+    """
+    from data.load import _statements
+
+    get_client().command(_statements((TRACE_VIEWS,))[0])
+
+
+def save_trace_view(investigation_id: str, view: dict[str, Any]) -> None:
+    """Persist the reshaped trace. Best-effort: losing a snapshot must never fail a request."""
+    try:
+        _ensure_trace_views()
+        get_client().insert(
+            TRACE_VIEWS, [[investigation_id, _now(), json.dumps(view)]],
+            column_names=["investigation_id", "created_at", "view"],
+        )
+    except Exception as exc:  # noqa: BLE001 - the live trace answered; the snapshot is an extra
+        log.warning("Could not snapshot trace for %s: %s", investigation_id, exc)
+
+
+def load_trace_view(investigation_id: str) -> dict[str, Any] | None:
+    try:
+        _ensure_trace_views()
+        rows = get_client().query(
+            f"SELECT view FROM {TRACE_VIEWS} FINAL WHERE investigation_id = {{id:String}}",
+            parameters={"id": investigation_id},
+        ).result_rows
+    except Exception:  # noqa: BLE001 - no snapshot table yet / DB hiccup -> fall back to live
+        return None
+    return json.loads(rows[0][0]) if rows else None
