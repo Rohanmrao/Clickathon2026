@@ -17,6 +17,25 @@ from obs import langfuse
 log = logging.getLogger(__name__)
 
 
+def _trace_url(lf, trace_id: str | None) -> str | None:
+    """The trace's URL, or None on any failure resolving it.
+
+    get_trace_url() makes a SYNCHRONOUS, AUTHENTICATED network call (it looks up the project id
+    to build the link) — unlike span creation and flush(), which just queue/batch-export and
+    degrade silently on their own. An expired or misconfigured key here previously raised
+    UnauthorizedError straight out of investigation_trace() and 500'd the whole investigation:
+    a Langfuse credentials problem should cost the trace LINK, the same way a Bedrock outage
+    only costs the narrative — never the computed evidence.
+    """
+    if trace_id is None:
+        return None
+    try:
+        return _browser_url(lf.get_trace_url(trace_id=trace_id))
+    except Exception as exc:  # noqa: BLE001 - any Langfuse/network failure must not sink the investigation
+        log.warning("Could not resolve trace URL for %s: %s", trace_id, exc)
+        return None
+
+
 def _browser_url(url: str | None) -> str | None:
     """Rewrite the SDK's internal ingestion host to the browser-facing one.
 
@@ -80,7 +99,7 @@ def investigation_trace(
             )
             trace_id = lf.get_current_trace_id()
             try:
-                yield Trace(trace_id=trace_id, url=_browser_url(lf.get_trace_url(trace_id=trace_id)))
+                yield Trace(trace_id=trace_id, url=_trace_url(lf, trace_id))
             finally:
                 # Publish LAST, after the investigation's query spans exist, and against the
                 # ROOT span explicitly. Two things bit here: publishing up front was undone by

@@ -85,6 +85,30 @@ def test_phase_noop_without_active_trace(monkeypatch):
     assert lf.events == []  # no orphan span created
 
 
+def test_trace_url_none_when_trace_id_is_none():
+    assert tracing._trace_url(object(), None) is None
+
+
+def test_trace_url_degrades_to_none_on_langfuse_failure(caplog):
+    class UnauthorizedLangfuse:
+        def get_trace_url(self, *, trace_id):
+            raise RuntimeError("401 Unauthorized")
+
+    with caplog.at_level("WARNING"):
+        result = tracing._trace_url(UnauthorizedLangfuse(), "trace-1")
+
+    assert result is None
+    assert "trace-1" in caplog.text
+
+
+def test_trace_url_returns_browser_url_on_success():
+    class WorkingLangfuse:
+        def get_trace_url(self, *, trace_id):
+            return f"https://traces.kangasys.com/trace/{trace_id}"
+
+    assert tracing._trace_url(WorkingLangfuse(), "trace-1") == "https://traces.kangasys.com/trace/trace-1"
+
+
 def test_stamp_trace_verdict_sets_output_and_score(fake_lf):
     calls = {}
     fake_lf.set_current_trace_io = lambda **kw: calls.setdefault("io", kw)
