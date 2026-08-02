@@ -24,6 +24,13 @@
   },
   "active_dataset": "dev",
   "history_dataset": "dev",
+  "stream": {
+    "source_dir": "InMobi/unseen_data",
+    "batch_hours": 1,
+    "tick_seconds": 2,
+    "detect_metrics": ["revenue", "fill_rate", "ecpm", "requests", "ctr", "rpr", "render_rate"],
+    "detect_method": "isolation_forest"
+  },
   "metrics": {
     "base_events": {
       "requests": "count(*)",

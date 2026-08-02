@@ -22,7 +22,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from api import chat as chatlib
-from api import dev, pipeline
+from api import dev, pipeline, stream_job
 from config import LANGFUSE
 from data import store
 from data.client import clickhouse_available
@@ -172,6 +172,43 @@ def start_scan(req: ScanRequest) -> dict:
 def scan_status(job_id: str) -> dict:
     """Poll a sweep. `finished` flips true, then `result.incidents` holds the findings."""
     return dev.job_status(job_id)
+
+
+class StreamRequest(BaseModel):
+    """Replay knobs; every field defaults to config.stream so a bare POST is a valid demo run."""
+    batch_hours: int | None = None
+    tick_seconds: float | None = None
+    detect_metrics: list[str] | None = None
+    detect_method: str | None = None
+    reset: bool = True
+
+
+@app.post("/stream/start")
+def stream_start(req: StreamRequest) -> dict:
+    """Replay the sealed unseen slice as a live stream, scoring each hour as it lands.
+
+    Ingestion and inference in one loop: every batch is detected on, and a metric that fires
+    gets a full traced investigation persisted, so findings appear in the dashboard while the
+    stream is still running. Switches the process to the unseen dataset for the duration —
+    baselines keep reading dev history, which is what makes 5 days of data detectable at all.
+    """
+    overrides = {k: v for k, v in req.model_dump(exclude={"reset"}).items() if v is not None}
+    try:
+        return stream_job.start(overrides, reset=req.reset)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+
+
+@app.post("/stream/stop")
+def stream_stop() -> dict:
+    """Stop after the current batch — a half-written batch would corrupt the rollup."""
+    return stream_job.stop()
+
+
+@app.get("/stream/status")
+def stream_status() -> dict:
+    """Progress, throughput, and the detections found so far. Safe to poll."""
+    return stream_job.status()
 
 
 @app.get("/dashboard")
