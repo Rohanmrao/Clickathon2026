@@ -13,7 +13,7 @@ that is not in the evidence.
 | **Live demo** | **https://clickathon.kangasys.com** |
 | **Langfuse traces** | https://traces.kangasys.com |
 | **LibreChat** | https://chat.kangasys.com |
-| **Demo video** | _to be added_ |
+| **Demo video** | https://drive.google.com/file/d/10gCzD86sdgB3gRTdEimLrbeHNSbB3MPM/view |
 | **Pitch deck** | [`pitch-deck.pdf`](pitch-deck.pdf) |
 
 ## Team
