@@ -22,7 +22,9 @@ bookkeeping should not appear as analysis spans inside an investigation trace.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+import logging
+from datetime import UTC, datetime
+from functools import lru_cache
 from typing import Any
 
 from data.client import get_client
@@ -32,6 +34,9 @@ BUNDLES = "bundles"
 INVESTIGATIONS = "investigations"
 SESSIONS = "chat_sessions"
 TURNS = "chat_turns"
+TRACE_VIEWS = "trace_views"
+
+log = logging.getLogger(__name__)
 
 _BUNDLE_COLUMNS = [
     "investigation_id", "created_at", "updated_at", "window_start", "window_end",
@@ -47,7 +52,7 @@ _INVESTIGATION_COLUMNS = [
 
 def _now() -> datetime:
     # ClickHouse DateTime is naive; store UTC without tzinfo so round-trips compare equal.
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 def _naive(dt: datetime) -> datetime:
@@ -163,19 +168,40 @@ def load_meta(investigation_id: str) -> tuple[str | None, str | None]:
     return (rows[0][0] or None), (rows[0][1] or None)
 
 
+_DASHBOARD_FIELDS = [  # everything NOT in _INCIDENT_KEY; those are grouping keys already
+    "investigation_id", "window_end", "direction",
+    "observed", "expected", "pct_delta", "score", "is_anomaly", "primary_factor",
+    "ruled_out_count", "ruled_out_summary", "narrative", "narrated", "trace_url",
+]
+
+# One incident = one metric moving in one window in one segment. Re-investigating it is a new
+# bundle but not a new finding.
+_INCIDENT_KEY = "metric, window_start, localized_segment"
+
+
 def list_dashboard(limit: int = 50, since: datetime | None = None) -> list[dict[str, Any]]:
     """Dashboard poll query, straight off `bundles`. `since` (a row's created_at from a prior
     poll) returns only rows created after it, so a polling client doesn't re-fetch everything
-    every tick. Excludes the `bundle` JSON column — the card view doesn't need it."""
+    every tick. Excludes the `bundle` JSON column — the card view doesn't need it.
+
+    Deduplicated to DISTINCT INCIDENTS, newest run wins. Investigating the same incident twice
+    (a re-run, or a sweep finding you drill again) writes two bundles, and without this the
+    switcher lists the same anomaly five times — which is what it did.
+    """
     where = "WHERE created_at > {since:DateTime}" if since else ""
+    # `latest_at`, not `created_at`: aliasing an aggregate to the column name it aggregates makes
+    # every other argMax(..., created_at) resolve to the alias and fail as a nested aggregate.
+    latest = ", ".join(f"argMax({f}, created_at) AS {f}" for f in _DASHBOARD_FIELDS)
     result = get_client().query(
-        f"SELECT investigation_id, created_at, window_start, window_end, metric, direction, "
-        f"observed, expected, pct_delta, score, is_anomaly, primary_factor, localized_segment, "
-        f"ruled_out_count, ruled_out_summary, narrative, narrated, trace_url "
-        f"FROM {BUNDLES} FINAL {where} ORDER BY created_at DESC LIMIT {{n:UInt32}}",
+        f"SELECT {_INCIDENT_KEY}, max(created_at) AS latest_at, {latest} "
+        f"FROM {BUNDLES} FINAL {where} "
+        f"GROUP BY {_INCIDENT_KEY} ORDER BY latest_at DESC LIMIT {{n:UInt32}}",
         parameters={"n": limit, **({"since": _naive(since)} if since else {})},
     )
-    return [dict(zip(result.column_names, r)) for r in result.result_rows]
+    rows = [dict(zip(result.column_names, r)) for r in result.result_rows]
+    for row in rows:  # callers expect created_at, not the internal ordering alias
+        row["created_at"] = row.pop("latest_at")
+    return rows
 
 
 def list_investigations(limit: int = 50) -> list[dict[str, Any]]:
@@ -263,3 +289,45 @@ def delete_all_sessions() -> int:
     for table in (SESSIONS, TURNS):
         client.command(f"TRUNCATE TABLE {table}")
     return count
+
+
+# ---- trace snapshots -------------------------------------------------------
+#
+# Langfuse owns the LIVE trace; this owns the HISTORY. The drawer reads the snapshot first, so
+# a trace stays readable after Langfuse is reset, wiped (`docker compose down -v`) or is simply
+# down — which is exactly how the "Trace not found" dead links happened.
+
+@lru_cache(maxsize=1)
+def _ensure_trace_views() -> None:
+    """Create the snapshot table on demand, from schema.sql so there is one source of truth.
+
+    Created here rather than requiring a manual DDL step: the table arrived after the initial
+    schema, and `CREATE TABLE IF NOT EXISTS` in schema.sql never runs itself.
+    """
+    from data.load import _statements
+
+    get_client().command(_statements((TRACE_VIEWS,))[0])
+
+
+def save_trace_view(investigation_id: str, view: dict[str, Any]) -> None:
+    """Persist the reshaped trace. Best-effort: losing a snapshot must never fail a request."""
+    try:
+        _ensure_trace_views()
+        get_client().insert(
+            TRACE_VIEWS, [[investigation_id, _now(), json.dumps(view)]],
+            column_names=["investigation_id", "created_at", "view"],
+        )
+    except Exception as exc:  # noqa: BLE001 - the live trace answered; the snapshot is an extra
+        log.warning("Could not snapshot trace for %s: %s", investigation_id, exc)
+
+
+def load_trace_view(investigation_id: str) -> dict[str, Any] | None:
+    try:
+        _ensure_trace_views()
+        rows = get_client().query(
+            f"SELECT view FROM {TRACE_VIEWS} FINAL WHERE investigation_id = {{id:String}}",
+            parameters={"id": investigation_id},
+        ).result_rows
+    except Exception:  # noqa: BLE001 - no snapshot table yet / DB hiccup -> fall back to live
+        return None
+    return json.loads(rows[0][0]) if rows else None

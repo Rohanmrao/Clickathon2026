@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { getBundle, getHealth, investigate, listBundles, listIncidents, narrate, type IncidentRow } from "./api";
+import { getBundle, getHealth, getTrace, investigate, listBundles, listIncidents, narrate, type IncidentRow } from "./api";
 import sampleBundle from "./sample_bundle.json";
 import { AnomalyCard } from "./components/AnomalyCard";
 import { DiagnosisCard } from "./components/DiagnosisCard";
@@ -8,9 +8,15 @@ import { MetricTree } from "./components/MetricTree";
 import { RuledOutPanel } from "./components/RuledOutPanel";
 import { SidebarDock } from "./components/SidebarDock";
 import { TraceDrawer } from "./components/TraceDrawer";
+import { SweepDrawer } from "./components/SweepDrawer";
 import { ClickathonMark } from "./components/ClickathonMark";
 import { DateField } from "./components/DateField";
 import type { EvidenceBundle, InvestigationRow } from "./types";
+
+// Langfuse's worker ingests spans asynchronously; give it this long before snapshotting.
+const TRACE_SNAPSHOT_DELAY_MS = 10000;
+// Engine status is a live condition, so re-poll it rather than trusting page load.
+const HEALTH_POLL_MS = 30000;
 
 const METRICS = ["revenue", "fill_rate", "ecpm", "requests", "ctr", "rpr", "render_rate"];
 
@@ -45,6 +51,7 @@ export default function App() {
   const [winEnd, setWinEnd] = useState("");
   const [history, setHistory] = useState<InvestigationRow[]>([]);
   const [traceOpen, setTraceOpen] = useState(false);
+  const [sweepOpen, setSweepOpen] = useState(false);
   const timer = useRef<number | undefined>(undefined);
 
   // Theme lives on <body> so page backgrounds (not just cards) follow variables-final.css.
@@ -72,7 +79,17 @@ export default function App() {
       setIncidents(rows);
       if (rows.length) selectIncident(rows[0].investigation_id);
     });
-    return () => window.clearInterval(timer.current);
+    // Re-check health on a timer. Engine status is a live condition, not a page-load fact: a
+    // single cold/slow probe used to latch the "offline" banner until the next investigation,
+    // long after the database was healthy again.
+    const health = window.setInterval(
+      () => getHealth().then((h) => h && setEngine(h.engine)),
+      HEALTH_POLL_MS,
+    );
+    return () => {
+      window.clearInterval(timer.current);
+      window.clearInterval(health);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -109,10 +126,13 @@ export default function App() {
   // Run: investigate (numbers) -> reveal drill-down -> narrate (prose arrives after, per the
   // investigate/narrate split). A window is sent only if both dates are set, else the backend
   // discovers the anomalous window itself.
-  const run = async () => {
+  const run = async (
+    forMetric: string = metric,
+    win: { start: string; end: string } | undefined =
+      winStart && winEnd ? { start: `${winStart}T00:00:00`, end: `${winEnd}T00:00:00` } : undefined,
+  ) => {
     setRunning(true);
-    const win = winStart && winEnd ? { start: `${winStart}T00:00:00`, end: `${winEnd}T00:00:00` } : undefined;
-    const { bundle: b, live } = await investigate(metric, win);
+    const { bundle: b, live } = await investigate(forMetric, win);
     setBundle(b);
     setSelectedId(b.investigation_id || null);
     setSource(live ? "live" : "fixture");
@@ -120,6 +140,13 @@ export default function App() {
     if (live && b.investigation_id) {
       const narrated = await narrate(b.investigation_id);
       if (narrated) setBundle(narrated); // fills the Diagnosis card
+    }
+    // Warm the trace snapshot. Reading /trace is what persists it to ClickHouse, and Langfuse
+    // ingests spans asynchronously — so wait for the worker, then read once. Without this the
+    // history only survives for investigations someone happened to open the drawer on.
+    if (live && b.investigation_id) {
+      const id = b.investigation_id;
+      window.setTimeout(() => void getTrace(id), TRACE_SNAPSHOT_DELAY_MS);
     }
     getHealth().then((h) => h && setEngine(h.engine)); // reflect offline/live after the run
     refreshHistory();
@@ -207,7 +234,8 @@ export default function App() {
           {selectedId && (
             <button className="ghost-btn" onClick={() => setTraceOpen(true)}>Open trace</button>
           )}
-          <button className="primary-btn" onClick={run} disabled={running}>
+          <button className="ghost-btn" onClick={() => setSweepOpen(true)}>Find anomalies</button>
+          <button className="primary-btn" onClick={() => run()} disabled={running}>
             {running ? "Investigating…" : "Investigate"}
           </button>
         </div>
@@ -298,6 +326,18 @@ export default function App() {
           <SidebarDock history={history} onOpenRun={openRun} onRefresh={refreshHistory} segOf={segOf} bundleId={selectedId} />
         </aside>
       </main>
+
+      <SweepDrawer
+        open={sweepOpen}
+        onClose={() => setSweepOpen(false)}
+        start={winStart}
+        end={winEnd}
+        onInvestigate={(m, ws, we) => {
+          setSweepOpen(false);
+          setMetric(m);
+          run(m, { start: ws, end: we });
+        }}
+      />
 
       <TraceDrawer
         investigationId={selectedId}

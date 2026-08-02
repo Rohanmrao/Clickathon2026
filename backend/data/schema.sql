@@ -127,6 +127,17 @@ CREATE TABLE IF NOT EXISTS investigations (
 ) ENGINE = ReplacingMergeTree(updated_at)
 ORDER BY investigation_id;
 
+-- Snapshot of a finished investigation's Langfuse trace, reshaped for the dashboard drawer
+-- (see narrator/trace_read.py). Written the first time the trace is read, so a trace stays
+-- readable forever even if Langfuse is reset or unreachable — Langfuse owns the live trace,
+-- this owns the history.
+CREATE TABLE IF NOT EXISTS trace_views (
+    investigation_id String,
+    created_at       DateTime,
+    view             String                      -- JSON: {total_ms, scores, steps[]}
+) ENGINE = ReplacingMergeTree(created_at)
+ORDER BY investigation_id;
+
 -- Chat sessions (kangavault contextId pattern). Title is generated lazily.
 CREATE TABLE IF NOT EXISTS chat_sessions (
     context_id String,

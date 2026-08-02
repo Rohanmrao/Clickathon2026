@@ -1271,3 +1271,66 @@ body {
   padding: var(--all-padding-s);
   border-top: var(--hairline) solid var(--border-neutral-default);
 }
+
+/* ---------- anomaly sweep (shares the drawer chrome above) ---------- */
+.sweep-run { width: 100%; justify-content: center; margin-bottom: var(--all-gap-s); }
+.sweep-list { list-style: none; margin: var(--all-gap-s) 0 0; padding: 0; display: flex; flex-direction: column; gap: var(--base-6); }
+.sweep-list.is-echo { opacity: 0.72; }
+.sweep-row {
+  padding: var(--all-padding-xs);
+  border: var(--hairline) solid var(--border-neutral-default);
+  border-radius: var(--all-radius-xs);
+  background: var(--bg-surface);
+}
+.sw-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--all-gap-xs); }
+.sw-metric { font-size: var(--font-size-caption-1); color: var(--content-display-text-title-main); }
+.sw-delta { font-size: var(--font-size-caption-1); font-weight: 600; }
+.sw-delta.is-drop { color: var(--content-negative-main); }
+.sw-delta.is-spike { color: var(--content-positive-main); }
+.sw-meta {
+  margin-top: var(--group-gap-s);
+  display: flex;
+  gap: var(--group-gap-l);
+  font-size: var(--font-size-caption-2);
+  color: var(--content-display-text-caption-dimmed);
+}
+.sw-seg { font-family: var(--font-family-mono); }
+.sw-action {
+  margin-top: var(--group-gap-s);
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--content-secondary-bright);
+  font-family: var(--font-family-common);
+  font-size: var(--font-size-caption-2);
+  cursor: pointer;
+}
+.sw-action:hover { text-decoration: underline; }
+
+/* Real findings must be unmistakable next to their echoes: accent rail + tinted card + badge. */
+.sw-section {
+  margin-top: var(--all-gap-s);
+  font-size: var(--font-size-caption-2);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: var(--content-display-text-caption-dimmed);
+}
+.sweep-row.is-anomaly {
+  border-color: var(--border-negative-default);
+  border-left-width: var(--base-2);
+  border-left-color: var(--content-negative-main);
+  background: var(--bg-negative-bright-default);
+}
+.sw-badge {
+  padding: 0 var(--base-6);
+  border-radius: var(--round);
+  background: var(--content-negative-main);
+  color: var(--on-accent);
+  font-size: var(--font-size-caption-2);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.sw-head { flex-wrap: wrap; }
+.sw-head .sw-delta { margin-left: auto; }

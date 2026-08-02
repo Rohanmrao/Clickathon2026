@@ -1,6 +1,7 @@
 """ClickHouse access. run_query returns rows AND the resolved SQL for queries[] traceability."""
 from __future__ import annotations
 
+import logging
 import time
 from functools import lru_cache
 from typing import Any
@@ -9,6 +10,8 @@ import clickhouse_connect
 
 from config import CLICKHOUSE
 from obs import langfuse
+
+log = logging.getLogger(__name__)
 
 
 @lru_cache(maxsize=1)
@@ -38,13 +41,25 @@ def clickhouse_available() -> bool:
     so a corrected .env reconnects on the next call without a process restart.
     """
     if not CLICKHOUSE["host"]:
+        log.warning("CLICKHOUSE_HOST is unset - reporting the datastore offline")
         return False
-    try:
-        get_client().command("SELECT 1")
-        return True
-    except Exception:  # noqa: BLE001 - any connection/auth failure means "treat as offline"
-        get_client.cache_clear()
-        return False
+
+    # Retried once, because the first failure is usually a COLD connection, not an outage:
+    # ClickHouse Cloud suspends idle services, and a wake-up plus TLS handshake can exceed the
+    # client's timeout. Declaring "offline" on a single cold miss is what made the dashboard
+    # flip to sample data while the database was perfectly healthy.
+    for attempt in (1, 2):
+        try:
+            get_client().command("SELECT 1")
+            return True
+        except Exception as exc:  # noqa: BLE001 - any connection/auth failure means "offline"
+            # Drop the pooled client so the retry (and any later call) reconnects cleanly.
+            get_client.cache_clear()
+            if attempt == 2:
+                # Logged, not swallowed: a silent probe failure is undiagnosable — the reason
+                # "why is it offline?" had no answer anywhere in the logs.
+                log.warning("ClickHouse probe failed twice, reporting offline: %s", exc)
+    return False
 
 
 def run_query(

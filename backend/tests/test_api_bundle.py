@@ -128,6 +128,8 @@ def test_list_bundles_offline_fails_soft(client, monkeypatch):
 
 def test_get_trace_returns_the_timeline(client, monkeypatch):
     monkeypatch.setattr("api.main.clickhouse_available", lambda: True)
+    monkeypatch.setattr("api.main.store.load_trace_view", lambda _id: None)
+    monkeypatch.setattr("api.main.store.save_trace_view", lambda *a: None)
     monkeypatch.setattr("api.main.store.load_meta", lambda _id: ("trace-1", None))
     monkeypatch.setattr("api.main.trace_read.trace_view",
                         lambda tid: {"available": True, "total_ms": 2876, "steps": []})
@@ -141,9 +143,78 @@ def test_get_trace_returns_the_timeline(client, monkeypatch):
 def test_get_trace_is_200_even_when_unavailable(client, monkeypatch):
     """The drawer shows a reason; a missing trace must never 500 the dashboard."""
     monkeypatch.setattr("api.main.clickhouse_available", lambda: True)
+    monkeypatch.setattr("api.main.store.load_trace_view", lambda _id: None)
     monkeypatch.setattr("api.main.store.load_meta", lambda _id: (None, None))
 
     res = client.get("/trace/abc-123")
 
     assert res.status_code == 200
     assert res.json()["available"] is False
+
+
+def test_trace_prefers_the_stored_snapshot(client, monkeypatch):
+    """Langfuse owns the live trace; the snapshot owns the history. No Langfuse call needed."""
+    monkeypatch.setattr("api.main.clickhouse_available", lambda: True)
+    monkeypatch.setattr("api.main.store.load_trace_view",
+                        lambda _id: {"available": True, "total_ms": 100, "steps": []})
+
+    def boom(_tid):
+        raise AssertionError("must not hit Langfuse when a snapshot exists")
+
+    monkeypatch.setattr("api.main.trace_read.trace_view", boom)
+
+    payload = client.get("/trace/abc-123").json()
+
+    assert payload["source"] == "stored"
+    assert payload["total_ms"] == 100
+
+
+def test_trace_caches_the_live_view_on_first_read(client, monkeypatch):
+    saved = {}
+    monkeypatch.setattr("api.main.clickhouse_available", lambda: True)
+    monkeypatch.setattr("api.main.store.load_trace_view", lambda _id: None)
+    monkeypatch.setattr("api.main.store.load_meta", lambda _id: ("trace-1", None))
+    monkeypatch.setattr("api.main.trace_read.trace_view",
+                        lambda tid: {"available": True, "total_ms": 200, "steps": []})
+    monkeypatch.setattr("api.main.store.save_trace_view",
+                        lambda iid, view: saved.update({"id": iid, "view": view}))
+
+    payload = client.get("/trace/abc-123").json()
+
+    assert payload["source"] == "live"
+    assert saved["id"] == "abc-123" and saved["view"]["total_ms"] == 200
+
+
+def test_unavailable_trace_is_not_cached(client, monkeypatch):
+    """Caching a failure would make the outage permanent."""
+    monkeypatch.setattr("api.main.clickhouse_available", lambda: True)
+    monkeypatch.setattr("api.main.store.load_trace_view", lambda _id: None)
+    monkeypatch.setattr("api.main.store.load_meta", lambda _id: (None, None))
+    monkeypatch.setattr("api.main.store.save_trace_view",
+                        lambda *a: (_ for _ in ()).throw(AssertionError("must not cache")))
+
+    assert client.get("/trace/abc-123").json()["available"] is False
+
+
+def test_scan_starts_a_background_job(client, monkeypatch):
+    seen = {}
+
+    def fake_start(start, end, grain, scope, min_effect, method):
+        seen.update({"start": start, "end": end, "method": method})
+        return {"job_id": "job-1"}
+
+    monkeypatch.setattr("api.main.dev.start_discover_job", fake_start)
+
+    payload = client.post("/scan", json={"start": "2026-06-01", "end": "2026-06-30"}).json()
+
+    assert payload["job_id"] == "job-1"
+    assert seen["start"] == "2026-06-01" and seen["method"] == "robust_z"
+
+
+def test_scan_status_is_polled_by_job_id(client, monkeypatch):
+    monkeypatch.setattr("api.main.dev.job_status",
+                        lambda jid: {"status": "done", "finished": True, "result": {"count": 3}})
+
+    payload = client.get("/scan/job-1").json()
+
+    assert payload["finished"] is True and payload["result"]["count"] == 3
