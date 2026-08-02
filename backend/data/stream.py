@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterator
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from config import config
@@ -143,12 +143,33 @@ def release(start: datetime, end: datetime, client=None) -> int:
     unseen, span = _t(), {"s": _fmt(start), "e": _fmt(end)}
     scope = "event_time >= toDateTime({s:String}) AND event_time < toDateTime({e:String})"
 
+    # Idempotence guard. A resumed stream walks windows from the beginning, so without this it
+    # re-ingests hours it already landed: measured 4x on hour 0 (34,060 requests vs a true
+    # 8,515), which reads downstream as a +331% "request spike" that never happened.
+    already = client.query(
+        f"SELECT count() FROM {unseen['hourly']} "
+        f"WHERE hour >= toDateTime({{s:String}}) AND hour < toDateTime({{e:String}})",
+        parameters=span,
+    ).result_rows[0][0]
+    if already:
+        return 0
+
     moved = client.query(
         f"SELECT count() FROM {_staging()} WHERE {scope}", parameters=span
     ).result_rows[0][0]
     if not moved:
         return 0
 
+    # EVERY step reads the immutable staging table, never a table this function also writes to.
+    # Deriving enriched from ad_events_unseen made duplication compound (1.23x raw -> 1.45x
+    # enriched), because a re-run re-read rows a previous run had already inserted.
+    join = (
+        f"FROM {_staging()} e "
+        f"LEFT JOIN {unseen['apps']} a USING (app_id) "
+        f"LEFT JOIN {unseen['advertisers']} adv USING (advertiser_id) "
+        f"LEFT JOIN {unseen['geo_device']} g USING (geo_device_id) "
+        f"WHERE e.{scope}"
+    )
     client.command(
         f"INSERT INTO {unseen['events']} SELECT * FROM {_staging()} WHERE {scope}", parameters=span
     )
@@ -158,20 +179,16 @@ def release(start: datetime, end: datetime, client=None) -> int:
         f"SELECT e.event_time, e.app_id, e.geo_device_id, e.advertiser_id, e.ad_format, "
         f"       e.is_filled, e.is_impression, e.is_click, e.revenue, "
         f"       a.category, a.publisher_tier, adv.vertical, adv.campaign_type, "
-        f"       g.region, g.country, g.device_model, g.os_version "
-        f"FROM {unseen['events']} e "
-        f"LEFT JOIN {unseen['apps']} a USING (app_id) "
-        f"LEFT JOIN {unseen['advertisers']} adv USING (advertiser_id) "
-        f"LEFT JOIN {unseen['geo_device']} g USING (geo_device_id) "
-        f"WHERE e.{scope}",
+        f"       g.region, g.country, g.device_model, g.os_version " + join,
         parameters=span,
     )
     client.command(
         f"INSERT INTO {unseen['hourly']} "
-        f"SELECT toStartOfHour(event_time) AS hour, region, country, os_version, device_model, "
-        f"       ad_format, category, publisher_tier, vertical, campaign_type, app_id, advertiser_id, "
-        f"       count(), sum(is_filled), sum(is_impression), sum(is_click), sum(revenue) "
-        f"FROM {unseen['enriched']} WHERE {scope} GROUP BY ALL",
+        f"SELECT toStartOfHour(e.event_time) AS hour, g.region, g.country, g.os_version, "
+        f"       g.device_model, e.ad_format, a.category, a.publisher_tier, adv.vertical, "
+        f"       adv.campaign_type, e.app_id, e.advertiser_id, "
+        f"       count(), sum(e.is_filled), sum(e.is_impression), sum(e.is_click), sum(e.revenue) "
+        + join + " GROUP BY ALL",
         parameters=span,
     )
     return moved
@@ -199,10 +216,13 @@ def record_analysis(rows: list[dict], client=None) -> int:
     ensure_analysis_table(client)
     columns = ["hour", "metric", "method", "analyzed_at", "detected", "score",
                "pct_delta", "observed", "expected", "investigation_id"]
-    now = datetime.now()
+    # UTC-aware on the way in. clickhouse-connect treats a NAIVE datetime as LOCAL time and
+    # converts it for the UTC column, which silently shifted every logged hour by the machine's
+    # offset (-5:30 here) — mislabelling the ledger and breaking the skip-on-resume match.
+    now = datetime.now(UTC)
     client.insert(
         ANALYSIS,
-        [[r["hour"], r["metric"], r["method"], now, 1 if r["detected"] else 0,
+        [[r["hour"].replace(tzinfo=UTC), r["metric"], r["method"], now, 1 if r["detected"] else 0,
           float(r["score"]), float(r["pct_delta"]), float(r["observed"]), float(r["expected"]),
           r.get("investigation_id") or ""] for r in rows],
         column_names=columns,
