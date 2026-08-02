@@ -1468,3 +1468,8 @@ body {
 /* Deep-scan findings sit alongside the per-hour global hits; segment-scoped ones are the
    ones per-batch global detection cannot see, so they read differently. */
 .sb-hit.is-segment { border-color: var(--border-secondary-default); background: var(--bg-secondary-bright-default); }
+
+/* Toolbar ghost buttons stay in place when unavailable rather than vanishing — a control that
+   disappears makes the toolbar reflow and hides that the action exists at all. */
+.ghost-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.ghost-btn:disabled:hover { background: transparent; color: var(--content-display-text-body-main); }

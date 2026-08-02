@@ -9,7 +9,6 @@ import { MetricTree } from "./components/MetricTree";
 import { RuledOutPanel } from "./components/RuledOutPanel";
 import { SidebarDock } from "./components/SidebarDock";
 import { TraceDrawer } from "./components/TraceDrawer";
-import { SweepDrawer } from "./components/SweepDrawer";
 import { StreamBar } from "./components/StreamBar";
 import { ClickathonMark } from "./components/ClickathonMark";
 import { DateField } from "./components/DateField";
@@ -75,7 +74,6 @@ export default function App() {
   const [winEnd, setWinEnd] = useState("");
   const [history, setHistory] = useState<InvestigationRow[]>([]);
   const [traceOpen, setTraceOpen] = useState(false);
-  const [sweepOpen, setSweepOpen] = useState(false);
   const [stream, setStream] = useState<StreamStatus | null>(null);
   const [dataset, setDatasetState] = useState<string | null>(null);
   const streamPoll = useRef<number | undefined>(undefined);
@@ -382,10 +380,14 @@ export default function App() {
               max={DATA_MAX_DATE}
             />
           </div>
-          {selectedId && (
-            <button className="ghost-btn" onClick={() => setTraceOpen(true)}>Open trace</button>
-          )}
-          <button className="ghost-btn" onClick={() => setSweepOpen(true)}>Find anomalies</button>
+          <button
+            className="ghost-btn"
+            onClick={() => setTraceOpen(true)}
+            disabled={!selectedId}
+            title={selectedId ? "How this was investigated" : "Select or run an investigation first"}
+          >
+            Open trace
+          </button>
           <button className="ghost-btn" onClick={onStartStream} disabled={stream?.status === "running"}>
             {stream?.status === "running" ? "Streaming…" : "Start stream"}
           </button>
@@ -518,17 +520,6 @@ export default function App() {
         </aside>
       </main>
       )}
-
-      <SweepDrawer
-        open={sweepOpen}
-        onClose={() => setSweepOpen(false)}
-        start={winStart}
-        end={winEnd}
-        onInvestigate={(_m, ws, we) => {
-          setSweepOpen(false);
-          runRange(ws.slice(0, 10), we.slice(0, 10));
-        }}
-      />
 
       <TraceDrawer
         investigationId={selectedId}

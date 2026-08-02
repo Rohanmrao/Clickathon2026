@@ -24,7 +24,7 @@ from pydantic import BaseModel
 
 from api import chat as chatlib
 from api import dev, pipeline, stream_job
-from config import LANGFUSE, config, dataset_name
+from config import LANGFUSE, config, dataset_name, target_hourly
 from data import store
 from data.client import clickhouse_available
 from models import EvidenceBundle, Window

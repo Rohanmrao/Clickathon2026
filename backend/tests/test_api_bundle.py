@@ -218,3 +218,22 @@ def test_scan_status_is_polled_by_job_id(client, monkeypatch):
     payload = client.get("/scan/job-1").json()
 
     assert payload["finished"] is True and payload["result"]["count"] == 3
+
+
+def test_dashboard_feed_is_scoped_to_the_active_dataset(client, monkeypatch):
+    """Regression: /dashboard 500'd on a missing import, and nothing covered the endpoint.
+
+    Also pins the scoping contract — the feed must be limited to the dataset under
+    investigation, or dev-era incidents show up while the dashboard points at the streamed slice.
+    """
+    seen = {}
+    monkeypatch.setattr("api.main.store.dataset_bounds", lambda t: ("LO", "HI"))
+    monkeypatch.setattr("api.main.store.list_dashboard",
+                        lambda limit, since, within: seen.update(limit=limit, within=within) or [])
+
+    payload = client.get("/dashboard?limit=200").json()
+
+    assert payload["count"] == 0
+    assert payload["dataset"] == "dev"
+    assert seen["limit"] == 200
+    assert seen["within"] == ("LO", "HI")
