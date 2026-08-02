@@ -82,22 +82,27 @@ def investigation_trace(
             try:
                 yield Trace(trace_id=trace_id, url=_browser_url(lf.get_trace_url(trace_id=trace_id)))
             finally:
-                # Publish LAST, after the investigation's query spans exist. Publishing up
-                # front looked correct in isolation but silently lost: every child span
-                # ingested afterwards rewrites the trace record, and the later write wins, so
-                # the flag came back False for any real investigation while a bare
-                # open-and-close trace stayed True.
-                _publish(lf)
+                # Publish LAST, after the investigation's query spans exist, and against the
+                # ROOT span explicitly. Two things bit here: publishing up front was undone by
+                # child spans rewriting the trace record, and the client-level
+                # set_current_trace_as_public() resolves "current" to whichever span is active
+                # rather than the root, so it worked on a bare trace and silently no-opped on a
+                # real one with 37 observations.
+                _publish(root)
                 lf.flush()
 
 
-def _publish(lf) -> None:
+def _publish(root) -> None:
     """Make the trace readable without a Langfuse login, when configured.
 
     A trace URL is only worth putting in a submission if the person receiving it can open it.
     Without this, a judge following the link is asked to sign in, signs up, lands in their own
-    empty organisation, and gets "You do not have access to this trace" - the evidence is there
+    empty organisation, and gets "You do not have access to this trace" - the evidence present
     and unreachable, which scores the same as not having it.
+
+    Called with the ROOT span, not the client: the client-level
+    `set_current_trace_as_public()` targets whichever span is currently active, which is not
+    the root once query spans exist.
 
     Publishing is irreversible per Langfuse, so it stays opt-in via LANGFUSE_PUBLISH_TRACES and
     is only appropriate for a demo dataset. Never enable it against real customer data.
@@ -105,7 +110,7 @@ def _publish(lf) -> None:
     if not LANGFUSE.get("publish_traces"):
         return
     try:
-        lf.set_current_trace_as_public()
+        root.set_trace_as_public()
     except Exception as exc:  # noqa: BLE001 - an unpublished trace is worse than a failed run
         log.warning("Could not publish trace: %s", exc)
 
