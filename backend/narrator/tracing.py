@@ -79,10 +79,15 @@ def investigation_trace(
                 }
             )
             trace_id = lf.get_current_trace_id()
-            _publish(lf)
             try:
                 yield Trace(trace_id=trace_id, url=_browser_url(lf.get_trace_url(trace_id=trace_id)))
             finally:
+                # Publish LAST, after the investigation's query spans exist. Publishing up
+                # front looked correct in isolation but silently lost: every child span
+                # ingested afterwards rewrites the trace record, and the later write wins, so
+                # the flag came back False for any real investigation while a bare
+                # open-and-close trace stayed True.
+                _publish(lf)
                 lf.flush()
 
 
