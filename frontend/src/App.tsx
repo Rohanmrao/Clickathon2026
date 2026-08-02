@@ -76,6 +76,7 @@ export default function App() {
   const [traceOpen, setTraceOpen] = useState(false);
   const [stream, setStream] = useState<StreamStatus | null>(null);
   const [dataset, setDatasetState] = useState<string | null>(null);
+  const [datasets, setDatasets] = useState<string[]>([]);
   const streamPoll = useRef<number | undefined>(undefined);
   const [series, setSeries] = useState<SeriesPoint[] | undefined>(undefined);
   const [seriesLoading, setSeriesLoading] = useState(false);
@@ -129,7 +130,7 @@ export default function App() {
   // Exception: right after a seed run the page reloads itself, and the id it left in
   // sessionStorage wins, so the reload lands on what was just found rather than the biggest.
   useEffect(() => {
-    getHealth().then((h) => { if (h) { setEngine(h.engine); setDatasetState(h.dataset?.target ?? null); } });
+    getHealth().then((h) => { if (h) { setEngine(h.engine); setDatasetState(h.dataset?.target ?? null); setDatasets(h.dataset?.available ?? []); } });
     refreshHistory();
     const justSeeded = SEEDED_SHOWCASE_ID;
     listIncidents().then((rows) => {
@@ -156,7 +157,7 @@ export default function App() {
     // single cold/slow probe used to latch the "offline" banner until the next investigation,
     // long after the database was healthy again.
     const health = window.setInterval(
-      () => getHealth().then((h) => { if (h) { setEngine(h.engine); setDatasetState(h.dataset?.target ?? null); } }),
+      () => getHealth().then((h) => { if (h) { setEngine(h.engine); setDatasetState(h.dataset?.target ?? null); setDatasets(h.dataset?.available ?? []); } }),
       HEALTH_POLL_MS,
     );
     // Pick up a replay already in flight (e.g. after a page refresh mid-stream).
@@ -356,13 +357,22 @@ export default function App() {
           </button>
           <span className="status-pill"><span className="live-dot" /> {engineLabel}</span>
           {dataset && (
-            <button
+            <select
               className={`ghost-btn dataset-pill ${dataset === "unseen" ? "is-unseen" : ""}`}
-              onClick={() => onSwitchDataset(dataset === "unseen" ? "dev" : "unseen")}
-              title="Which table set investigations query. Click to switch."
+              value={dataset}
+              onChange={(e) => onSwitchDataset(e.target.value)}
+              disabled={stream?.status === "running"}
+              aria-label="Dataset"
+              title={
+                stream?.status === "running"
+                  ? "A replay is streaming into the unseen tables — stop it to switch"
+                  : "Which table set investigations query. Baselines always read dev history."
+              }
             >
-              data · {dataset}
-            </button>
+              {(datasets.length ? datasets : [dataset]).map((d) => (
+                <option key={d} value={d}>data · {d}</option>
+              ))}
+            </select>
           )}
           <div className="controls">
             <DateField
@@ -428,6 +438,15 @@ export default function App() {
             <p className="empty-hint">
               Data covers {DATA_MIN_DATE} → {DATA_MAX_DATE}. Already-investigated windows are
               skipped, so re-running is safe.
+            </p>
+            {/* Named here too: which tables get investigated is decided BEFORE the first run,
+                and the toolbar pill is easy to miss on an empty dashboard. */}
+            <p className="empty-hint">
+              Investigating <strong>{dataset ?? "…"}</strong>
+              {dataset === "unseen"
+                ? " (the streamed Jul 6–10 slice; baselines still read dev history)"
+                : " (Jun 1 – Jul 5)"}
+              . Change it with the <strong>data ·</strong> selector in the toolbar before you start.
             </p>
           </section>
         </main>

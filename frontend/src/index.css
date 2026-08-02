@@ -1473,3 +1473,15 @@ body {
    disappears makes the toolbar reflow and hides that the action exists at all. */
 .ghost-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 .ghost-btn:disabled:hover { background: transparent; color: var(--content-display-text-body-main); }
+
+/* The synthetic sparkline is drawn from Math.sin(), not from ClickHouse. It is styled like the
+   real chart, so it must say what it is — an unlabelled fake curve reads as evidence. */
+.spark-synthetic-tag {
+  fill: var(--content-display-text-caption-dimmed);
+  font-family: var(--font-family-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+
+/* The dataset selector is a <select>, so it needs the native chrome tamed to match the pills. */
+select.dataset-pill { appearance: none; padding-right: var(--all-padding-s); }

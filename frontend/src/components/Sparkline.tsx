@@ -123,6 +123,9 @@ function SyntheticSpark() {
       <path d={act} fill="none" stroke="var(--content-secondary-main)" strokeWidth="2.4" strokeLinejoin="round" strokeLinecap="round" />
       <line x1={x(drop)} y1="8" x2={x(drop)} y2="212" stroke="var(--content-negative-dark)" strokeWidth="1" strokeDasharray="3 4" opacity="0.7" />
       <circle cx={x(pts - 1)} cy={y(last)} r="4.5" fill="var(--content-negative-dark)" />
+      {/* Say so on the chart itself. This curve is Math.sin(), not data, and it is styled
+          exactly like the real one — unlabelled, it reads as a measured baseline. */}
+      <text x="8" y="20" className="spark-synthetic-tag">illustrative shape — not measured data</text>
     </svg>
   );
 }

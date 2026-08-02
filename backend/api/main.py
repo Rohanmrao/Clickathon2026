@@ -60,7 +60,13 @@ def health() -> dict:
         # Which tables everything is pointed at. Reported because it is invisible otherwise:
         # a sweep over the streamed range returned 0 findings purely because the target had
         # reverted to dev, and nothing on screen said so.
-        "dataset": {"target": dataset_name("target"), "history": dataset_name("history")},
+        # `available` so the UI offers the real set rather than hardcoding names that could
+        # drift from config.json.
+        "dataset": {
+            "target": dataset_name("target"),
+            "history": dataset_name("history"),
+            "available": list(config()["datasets"]),
+        },
         "langfuse": {
             "enabled": bool(LANGFUSE["public_key"]),
             "host": LANGFUSE["host"],
