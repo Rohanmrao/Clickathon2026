@@ -2,8 +2,7 @@
 
 **Team:** Jalagaara Gang · **Track:** InMobi — *From alert to answer*
 
-> A metric moved. It tells you **which segment** did it, in seconds, with numbers you can
-> recompute yourself.
+> A metric moved. It tells you **which segment** did it, in seconds.
 
 **ClickHouse is the detective. The LLM is the journalist.** Every figure in a diagnosis is
 computed by SQL before the model ever sees it, and a guardrail rejects any number in the prose
@@ -15,7 +14,7 @@ that is not in the evidence.
 | **Langfuse traces** | https://traces.kangasys.com |
 | **LibreChat** | https://chat.kangasys.com |
 | **Demo video** | _to be added_ |
-| **Pitch deck** | `pitch-deck.pdf` — _to be added_ |
+| **Pitch deck** | [`pitch-deck.pdf`](pitch-deck.pdf) |
 
 ## Team
 
