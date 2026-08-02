@@ -15,7 +15,7 @@ that is not in the evidence.
 | **Langfuse traces** | https://traces.kangasys.com |
 | **LibreChat** | https://chat.kangasys.com |
 | **Demo video** | _to be added_ |
-| **Pitch deck** | `pitch-deck.pdf` — _to be added_ |
+| **Pitch deck** | [`pitch-deck.pdf`](pitch-deck.pdf) |
 
 ## Team
 
