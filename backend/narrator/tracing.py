@@ -139,6 +139,10 @@ class Phase:
         if self._span is not None:
             self._span.update(output=kw)
 
+    def rename(self, name: str) -> None:
+        if self._span is not None:
+            self._span.update(name=name)
+
 
 @contextmanager
 def phase(name: str, input: dict | None = None):
