@@ -166,7 +166,7 @@ def render(*, dashboard: str, replay: str, trace: str, depth: str, chat: str) ->
         '<div class="eyebrow" style="margin-top:auto">Click-a-thon 2026 · InMobi track</div>'
         '<h1>Automated<br>Root-Cause Analyst</h1>'
         '<p class="lead" style="margin-top:26px">A metric moved. It tells you <em>which segment</em> '
-        'did it — in seconds, with numbers you can recompute yourself.</p>'
+        'did it — in seconds.</p>'
         '<div style="margin-top:auto;display:flex;justify-content:space-between;align-items:flex-end">'
         '<div class="mono" style="font-size:14px;color:var(--faint);line-height:1.9">'
         'Jalagaara Gang<br>'
