@@ -24,7 +24,13 @@ from pathlib import Path
 
 from data import store
 from models import EvidenceBundle, Window
-from narrator.tracing import investigation_trace, narration_span
+from narrator.tracing import (
+    investigation_trace,
+    narration_span,
+    phase,
+    score_trace,
+    stamp_trace_verdict,
+)
 
 log = logging.getLogger(__name__)
 
@@ -124,6 +130,7 @@ def run_investigation(
 
         bundle.created_at = datetime.now()
         bundle.trace_url = trace.url
+        stamp_trace_verdict(bundle)
         # Only persist when the datastore is reachable; an offline run is in-memory only.
         if data_up:
             store.save_bundle(bundle, trace_id=trace.trace_id, session_id=session_id)
@@ -158,7 +165,10 @@ def run_detection(
         # The detectors are hour-grain; a chat window is usually a whole day. Scan the day's hours
         # and report the worst one, so we surface the planted anomaly rather than whatever sits at
         # midnight. `detect` is called per hour via the same chosen method.
-        anomaly, queries, hour, segment = _scan_window(metric, window, detector)
+        with phase("detect", input={"metric": metric, "detector": detector or "default"}) as p:
+            anomaly, queries, hour, segment = _scan_window(metric, window, detector)
+            p.verdict(detected=anomaly.detected, observed=anomaly.observed, expected=anomaly.expected,
+                      score=anomaly.score, direction=anomaly.direction, segment=segment)
         bundle = _detection_bundle(investigation_id, metric, hour, anomaly, queries, detector)
         # Record WHERE it was found. Empty = the move is population-wide, which is a real
         # finding in its own right (e.g. the Jun 21 collapse), not a missing localization.
@@ -281,6 +291,9 @@ def narrate_investigation(investigation_id: str) -> EvidenceBundle | None:
                         if verification else [],
                     },
                 )
+            verification = bundle.narrative_verification
+            score_trace("guardrail_passed", 1 if (verification and verification.passed) else 0,
+                        "BOOLEAN")
             if bundle.narrative_verification and not bundle.narrative_verification.passed:
                 log.warning(
                     "Guardrail FAILED for %s - numbers not in bundle: %s",

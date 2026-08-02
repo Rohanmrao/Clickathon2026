@@ -84,5 +84,8 @@
   "bedrock": {
     "region": "ap-southeast-2",
     "model_id": "apac.anthropic.claude-3-5-sonnet-20241022-v2:0"
+  },
+  "tracing": {
+    "live_flush": true
   }
 }

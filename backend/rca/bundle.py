@@ -24,6 +24,7 @@ from models import (
     RuledOut,
     Window,
 )
+from narrator.tracing import phase
 from rca.decomposition import decompose
 from rca.drilldown import baseline_window, drill
 from rca.incidents import scan_incidents
@@ -41,15 +42,33 @@ _HYPOTHESIS = {"requests": "request_volume", "fill_rate": "fill_rate",
 
 
 def build_bundle(metric: str, target: Window | None = None) -> EvidenceBundle:
-    """Run one investigation into a schema-valid EvidenceBundle (no narrative — that's Lane C)."""
-    window, anomaly, q_detect = _window_and_anomaly(metric, target)
+    """Run one investigation into a schema-valid EvidenceBundle (no narrative — that's Lane C).
+
+    Each stage runs inside a phase() span whose verdict records the decision AND the numbers
+    that drove it — the trace must read as: what was checked, in what order, and why.
+    """
+    with phase("detect", input={"metric": metric}) as p:
+        window, anomaly, q_detect = _window_and_anomaly(metric, target)
+        p.verdict(detected=anomaly.detected, observed=anomaly.observed, expected=anomaly.expected,
+                  score=anomaly.score, direction=anomaly.direction,
+                  window=[_fmt(window.start), _fmt(window.end)])
     baseline = baseline_window(window)
 
-    factors, q_decomp = decompose(metric, window, baseline)
+    with phase("decompose", input={"metric": metric}) as p:
+        factors, q_decomp = decompose(metric, window, baseline)
+        p.verdict(primary_factor=factors.primary_factor,
+                  factors={f.factor: f.contribution_pct for f in factors.factors})
     # Revenue investigations drill the factor that moved; a direct-metric investigation drills itself.
     factor = factors.primary_factor if metric == "revenue" else metric
-    path, localized, q_drill = drill(metric, factor, window, baseline)
-    ruled = _ruled_out(factors, q_decomp[0]["id"])
+
+    with phase("drilldown", input={"factor": factor}) as p:
+        path, localized, q_drill = drill(metric, factor, window, baseline)
+        p.verdict(localized_segment=localized, depth=len(path),
+                  culprit_contribution_pct=path[-1].contribution_pct if path else None)
+
+    with phase("ruled-out") as p:
+        ruled = _ruled_out(factors, q_decomp[0]["id"])
+        p.verdict(cleared={r.hypothesis: r.evidence for r in ruled})
 
     return EvidenceBundle(
         investigation_id=str(uuid.uuid4()),
@@ -78,7 +97,8 @@ def _fmt(dt: datetime) -> str:
 
 def _data_range() -> tuple[datetime, datetime]:
     row = run_query(
-        f"SELECT toStartOfDay(min(hour)), toStartOfDay(max(hour)) + INTERVAL 1 DAY FROM {_HOURLY}"
+        f"SELECT toStartOfDay(min(hour)), toStartOfDay(max(hour)) + INTERVAL 1 DAY FROM {_HOURLY}",
+        name="sql:data-range",
     )["rows"][0]
     return row[0], row[1]
 
@@ -86,7 +106,7 @@ def _data_range() -> tuple[datetime, datetime]:
 def _metric_over(metric: str, w: Window) -> tuple[float, str]:
     sql = (f"SELECT {metric_sql(metric, 'rollup')} FROM {_HOURLY} "
            f"WHERE hour >= toDateTime({{s:String}}) AND hour < toDateTime({{e:String}})")
-    res = run_query(sql, {"s": _fmt(w.start), "e": _fmt(w.end)})
+    res = run_query(sql, {"s": _fmt(w.start), "e": _fmt(w.end)}, name=f"sql:window-metric:{metric}")
     return float(res["rows"][0][0] or 0.0), res["resolved_sql"]
 
 

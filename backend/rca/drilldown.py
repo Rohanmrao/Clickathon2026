@@ -20,6 +20,7 @@ from data.calibration import measure_natural_noise
 from data.client import run_query
 from metrics import safe_div
 from models import DrilldownNode, Window
+from narrator.tracing import phase
 
 _M = config()["metrics"]
 _RCA = config()["rca"]
@@ -105,16 +106,16 @@ def _split(row: list, offset: int) -> tuple[dict, dict]:
     return obs, base
 
 
-def _pop(where_sql: str, params: dict) -> tuple[dict, dict, str]:
+def _pop(where_sql: str, params: dict, depth: int) -> tuple[dict, dict, str]:
     sql = f"SELECT {_sum_cols()} FROM {_HOURLY} WHERE ({_TGT} OR {_BASE}){where_sql}"
-    res = run_query(sql, params)
+    res = run_query(sql, params, name=f"sql:population:{depth}")
     obs, exp = _split(res["rows"][0], 0)  # equal-length windows -> baseline sums ARE the expectation
     return obs, exp, res["resolved_sql"]
 
 
-def _by_dim(dim: str, where_sql: str, params: dict) -> tuple[list, str]:
+def _by_dim(dim: str, where_sql: str, params: dict, depth: int) -> tuple[list, str]:
     sql = f"SELECT {dim} AS seg, {_sum_cols()} FROM {_HOURLY} WHERE ({_TGT} OR {_BASE}){where_sql} GROUP BY {dim}"
-    res = run_query(sql, params)
+    res = run_query(sql, params, name=f"sql:contribution:{dim}")
     out = [(row[0], *_split(row, 1)) for row in res["rows"]]
     return out, res["resolved_sql"]
 
@@ -137,7 +138,7 @@ def drill(metric: str, factor: str, target: Window, baseline: Window) -> tuple[l
     for depth in range(_RCA["max_depth"]):
         where_sql, wparams = _where(filt)
         params = {**params_base, **wparams}
-        pop_obs, pop_exp, pop_sql = _pop(where_sql, params)
+        pop_obs, pop_exp, pop_sql = _pop(where_sql, params, depth)
         queries.append({"id": f"q_drill_pop_{depth}", "sql": pop_sql,
                         "result_summary": {"filter": dict(filt), "observed": _metric_from_sums(factor, pop_obs)}})
 
@@ -160,27 +161,39 @@ def drill(metric: str, factor: str, target: Window, baseline: Window) -> tuple[l
             noise = measure_natural_noise(factor)
             floor = (noise or 0.0) * _RCA.get("min_gap_noise_multiple", 2.0)
             if floor and abs(gap_pct) < floor:
-                queries[-1]["result_summary"]["skipped"] = (
+                reason = (
                     f"population moved {gap_pct:+.2%}, under {floor:.2%} "
                     f"({_RCA.get('min_gap_noise_multiple', 2.0)}x {factor}'s natural noise of "
                     f"{noise:.2%}) — no material gap to localise"
                 )
+                queries[-1]["result_summary"]["skipped"] = reason
+                with phase(f"depth-{depth}:stop", input={"filter": dict(filt)}) as p:
+                    p.verdict(decision="stop", reason=reason)
                 break
 
         best = None  # (contribution, lift, dim, val, seg_obs, seg_exp, sql)
-        for dim in (d for d in _RCA["drilldown_dimensions"] if d not in filt):
-            rows, sql = _by_dim(dim, where_sql, params)
-            for val, seg_obs, seg_exp in rows:
-                if val in ("", None):  # empty dim value = "unknown/unfilled" artifact, never a culprit
-                    continue
-                contribution, lift = _score(factor, pop_obs, pop_exp, seg_obs, seg_exp)
-                if contribution >= thr and lift >= min_lift and (best is None or contribution > best[0]):
-                    best = (contribution, lift, dim, val, seg_obs, seg_exp, sql)
-        if best is None:
-            break
+        with phase(f"depth-{depth}", input={"filter": dict(filt), "factor": factor}) as p:
+            for dim in (d for d in _RCA["drilldown_dimensions"] if d not in filt):
+                rows, sql = _by_dim(dim, where_sql, params, depth)
+                for val, seg_obs, seg_exp in rows:
+                    if val in ("", None):  # empty dim value = "unknown/unfilled" artifact, never a culprit
+                        continue
+                    contribution, lift = _score(factor, pop_obs, pop_exp, seg_obs, seg_exp)
+                    if contribution >= thr and lift >= min_lift and (best is None or contribution > best[0]):
+                        best = (contribution, lift, dim, val, seg_obs, seg_exp, sql)
 
-        contribution, lift, dim, val, seg_obs, seg_exp, sql = best
-        filt = {**filt, dim: val}
+            if best is None:
+                p.rename(f"depth-{depth}:stop")
+                p.verdict(decision="stop",
+                          reason=f"no segment clears contribution>={thr} and lift>={min_lift}")
+                break
+
+            contribution, lift, dim, val, seg_obs, seg_exp, sql = best
+            filt = {**filt, dim: val}
+            p.rename(f"depth-{depth}:{dim}")
+            p.verdict(decision="descend", winner={dim: val},
+                      contribution_pct=round(contribution, 4), lift=round(lift, 2))
+
         queries.append({"id": f"q_drill_{depth}", "sql": sql,
                         "result_summary": {"split": dim, "value": val, "contribution_pct": round(contribution, 4), "lift": round(lift, 2)}})
         path.append(DrilldownNode(
