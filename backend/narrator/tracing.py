@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 
 from config import LANGFUSE
+from config import config as _config
 from obs import langfuse
 
 
@@ -109,4 +110,55 @@ def narration_span(trace_id: str | None, metric: str):
         try:
             yield span
         finally:
+            lf.flush()
+
+
+_TRACING = _config()["tracing"]
+
+# Canonical phase names — the judge-facing vocabulary, defined once.
+PHASES = {
+    "detect": "detect",
+    "decompose": "decompose",
+    "drilldown": "drilldown",
+    "depth": "depth-{depth}:{dim}",
+    "ruled_out": "ruled-out",
+}
+
+
+class Phase:
+    """Handle yielded by phase(). verdict() writes the decision (and its numbers) as span output."""
+
+    def __init__(self, span=None):
+        self._span = span
+
+    @property
+    def enabled(self) -> bool:
+        return self._span is not None
+
+    def verdict(self, **kw) -> None:
+        if self._span is not None:
+            self._span.update(output=kw)
+
+
+@contextmanager
+def phase(name: str, input: dict | None = None):
+    """One investigation phase as a nested Langfuse span.
+
+    Nests under the current OTEL context (root trace or an outer phase), so run_query spans
+    land inside the innermost phase automatically. No Langfuse client or no ACTIVE trace =>
+    inert Phase — the guard that keeps untraced calls (dev console, benchmarks) orphan-free.
+    Flushes on exit when tracing.live_flush, so spans appear in the UI mid-investigation.
+    """
+    lf = langfuse()
+    if lf is None or lf.get_current_trace_id() is None:
+        yield Phase()
+        return
+
+    try:
+        with lf.start_as_current_observation(name=name, as_type="span") as span:
+            if input is not None:
+                span.update(input=input)
+            yield Phase(span)
+    finally:
+        if _TRACING["live_flush"]:
             lf.flush()
