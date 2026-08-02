@@ -61,12 +61,14 @@ LANGFUSE_PUBLIC_KEY=$(get langfuse/public_key)
 LANGFUSE_SECRET_KEY=$(get langfuse/secret_key)
 LANGFUSE_INIT_USER_PASSWORD=$(get langfuse/init_user_password)
 # Two different addresses for the same service, deliberately:
-#   LANGFUSE_PUBLIC_HOST - what a BROWSER resolves. Compose defaults it to localhost, which is
-#                          right on a laptop and wrong on a server: every "Open trace" link a
-#                          judge clicks would point at their own machine.
+#   LANGFUSE_PUBLIC_HOST - what a BROWSER resolves. Points at the dedicated HTTPS host that
+#                          fronts Langfuse (traces.kangasys.com), so every "Open trace" link a
+#                          judge clicks lands on a reachable page instead of their own machine.
+#                          Uses the stable domain rather than the raw public IP, which changes
+#                          on stop/start.
 #   LANGFUSE_HOST        - container-to-container, set to the service name inside compose.
-LANGFUSE_PUBLIC_HOST=${LANGFUSE_PUBLIC_HOST:-http://${PUBLIC_IP}:3000}
-LANGFUSE_BASE_URL=http://${PUBLIC_IP}:3000
+LANGFUSE_PUBLIC_HOST=${LANGFUSE_PUBLIC_HOST:-https://traces.kangasys.com}
+LANGFUSE_BASE_URL=https://traces.kangasys.com
 
 # Bedrock auth comes from the instance profile - no keys anywhere on this box.
 AWS_REGION=$(get bedrock/region)

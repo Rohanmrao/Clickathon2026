@@ -145,19 +145,24 @@ about to succeed. The config sets 300s.
 **`proxy_buffering off`.** Chat streams as SSE; with buffering on, nginx holds every token until
 the response completes and the stream arrives as one lump.
 
-### Why Langfuse and LibreChat keep their ports
+### Why Langfuse and LibreChat get their own hosts
 
 Both are single-page apps that assume they are served from the root of a host. Behind a subpath
 they emit absolute asset URLs that miss the prefix and 404. Rewriting that reliably means
-patching vendored build config, which is not worth it here — so they stay on `:3000` and `:3080`
-over plain HTTP, while the dashboard and API get the domain and certificate.
+patching vendored build config, which is not worth it here — so instead of a subpath under the
+main domain, Langfuse gets its own HTTPS host, `traces.kangasys.com` (nginx proxies it to the
+container on `:3000`); LibreChat similarly stays on `:3080`.
 
-`LANGFUSE_PUBLIC_HOST` therefore points at `http://clickathon.kangasys.com:3000`, so a judge
-clicking "Open trace" lands on a reachable page.
+`LANGFUSE_PUBLIC_HOST` therefore points at `https://traces.kangasys.com`, so a judge clicking
+"Open trace" lands on a reachable TLS page. This needs a DNS A record for `traces.kangasys.com`
+and a certbot cert (`certbot --nginx` fills in the `ssl_certificate` lines in the traces host
+block of `nginx-clickathon.conf`).
 
 ### After a stop/start
 
 The instance has **no Elastic IP** (the account is at its allocation limit), so stopping it
-changes the public IP and breaks both the A record and `LANGFUSE_PUBLIC_HOST`. Reboot is safe;
-stop/start is not. If it happens, update the Route 53 record and the two URLs in
-`/opt/clickathon/.env`, then rebuild the frontend — `VITE_API_URL` is baked at build time.
+changes the public IP. `LANGFUSE_PUBLIC_HOST` is now a stable domain (`traces.kangasys.com`) and
+survives the IP change, but the Route 53 A records (for `clickathon.kangasys.com` and
+`traces.kangasys.com`) and `VITE_API_URL` still point at the raw IP. Reboot is safe; stop/start is
+not. If it happens, update the Route 53 records and `VITE_API_URL` in `/opt/clickathon/.env`, then
+rebuild the frontend — `VITE_API_URL` is baked at build time.
