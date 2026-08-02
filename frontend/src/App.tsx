@@ -15,6 +15,8 @@ import type { EvidenceBundle, InvestigationRow } from "./types";
 
 // Langfuse's worker ingests spans asynchronously; give it this long before snapshotting.
 const TRACE_SNAPSHOT_DELAY_MS = 10000;
+// Engine status is a live condition, so re-poll it rather than trusting page load.
+const HEALTH_POLL_MS = 30000;
 
 const METRICS = ["revenue", "fill_rate", "ecpm", "requests", "ctr", "rpr", "render_rate"];
 
@@ -77,7 +79,17 @@ export default function App() {
       setIncidents(rows);
       if (rows.length) selectIncident(rows[0].investigation_id);
     });
-    return () => window.clearInterval(timer.current);
+    // Re-check health on a timer. Engine status is a live condition, not a page-load fact: a
+    // single cold/slow probe used to latch the "offline" banner until the next investigation,
+    // long after the database was healthy again.
+    const health = window.setInterval(
+      () => getHealth().then((h) => h && setEngine(h.engine)),
+      HEALTH_POLL_MS,
+    );
+    return () => {
+      window.clearInterval(timer.current);
+      window.clearInterval(health);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
