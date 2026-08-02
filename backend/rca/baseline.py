@@ -119,11 +119,13 @@ def score(metric: str, target_hour: datetime, segment: dict | None = None) -> Re
     queries: list[dict] = []
     min_effect = effect_threshold(metric)  # calibrated once, live from ClickHouse
 
-    obs = run_query(_observed_sql(expr, where_sql), {"target": _fmt(target_hour), **params})
+    obs = run_query(_observed_sql(expr, where_sql), {"target": _fmt(target_hour), **params},
+                    name=f"sql:observed:{metric}")
     observed = float(obs["rows"][0][0]) if obs["rows"] and obs["rows"][0][0] is not None else 0.0
     queries.append({"id": "q_observed", "sql": obs["resolved_sql"], "result_summary": {"observed": observed}})
 
-    base = run_query(_baseline_sql(expr, where_sql), {"target": _fmt(target_hour), "start": _fmt(_baseline_start(target_hour)), **params})
+    base = run_query(_baseline_sql(expr, where_sql), {"target": _fmt(target_hour), "start": _fmt(_baseline_start(target_hour)), **params},
+                     name=f"sql:baseline:{metric}")
     series = [float(r[0]) for r in base["rows"] if r[0] is not None]
     queries.append({"id": "q_baseline", "sql": base["resolved_sql"], "result_summary": {"n": len(series), "values": series}})
 
@@ -142,11 +144,13 @@ def scan(metric: str, target_hour: datetime, dimension: str, segment: dict | Non
     queries: list[dict] = []
     min_effect = effect_threshold(metric)  # same metric for every segment -> calibrate once
 
-    obs = run_query(_observed_sql(expr, where_sql, dimension), {"target": _fmt(target_hour), **params})
+    obs = run_query(_observed_sql(expr, where_sql, dimension), {"target": _fmt(target_hour), **params},
+                    name=f"sql:observed-by:{dimension}")
     observed = {r[0]: float(r[1]) for r in obs["rows"] if r[1] is not None}
     queries.append({"id": "q_observed_by_dim", "sql": obs["resolved_sql"], "result_summary": {"n": len(observed)}})
 
-    base = run_query(_baseline_sql(expr, where_sql, dimension), {"target": _fmt(target_hour), "start": _fmt(_baseline_start(target_hour)), **params})
+    base = run_query(_baseline_sql(expr, where_sql, dimension), {"target": _fmt(target_hour), "start": _fmt(_baseline_start(target_hour)), **params},
+                     name=f"sql:baseline-by:{dimension}")
     series_by: dict = {}
     for r in base["rows"]:
         if r[1] is not None:
