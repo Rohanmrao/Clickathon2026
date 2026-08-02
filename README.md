@@ -35,19 +35,15 @@ itself — and it answers in three steps:
 2. **Decompose** — `Revenue = Requests × FillRate × eCPM`. Which factor actually moved?
 3. **Drill down** — which segment inside that factor is responsible, and what was ruled out?
 
-Against the four anomalies planted in the provided dataset, the drill-down scores **4/4**:
+Two cases matter more than raw accuracy, and the system is built for both.
 
-| Window | Metric | Answer | Change |
-|---|---|---|---|
-| Jun 23–25 | fill_rate | `os_version = Android 15` | 0.786 → 0.433 |
-| Jun 19–22 | eCPM | `category = finance` | 2.478 → 1.613 |
-| Jun 21 | requests | **no segment — population-wide** | −43.5% |
-| Jun 28–30 | fill_rate | `region = APAC AND os_version = iOS 18.1` | 0.785 → 0.388 |
+**A move can be population-wide.** When a metric drops uniformly across every region and every
+hour, the correct answer is that **no segment is responsible** — naming one is a false positive.
+The drill-down stops rather than inventing a culprit.
 
-Two of those are the interesting ones. **Jun 21 must blame nobody** — that traffic collapse was
-uniform across every region and every hour, so naming a culprit would be a false positive.
-**Jun 28–30 only exists at an intersection**: iOS 18.1 alone is −12.7%, APAC alone is −4.4%, and
-neither clears the bar. Only together do they reveal the real −50.4%.
+**A cause can exist only at an intersection.** Some segments look unremarkable alone and only
+reveal themselves in combination. A single-dimension scan cannot see these at all, so the search
+descends through combinations rather than ranking one dimension at a time.
 
 ## Architecture
 
@@ -91,14 +87,16 @@ metric's *volume* — its **lift**.
 
 That ratio is the whole idea. A segment that is merely large closes roughly its own share of the
 gap and scores lift ≈ 1. A real culprit closes far more than its share and scores much higher.
-Ranking on raw contribution instead just picks whichever segment carries the most traffic — which
-is how a naive drill-down "explains" Android 15 as *Android 15 AND tier_2 AND EU AND Galaxy A54*,
-three extra conditions that explain nothing.
+
+Ranking on raw contribution instead just picks whichever segment carries the most traffic, because
+for a uniform effect contribution share simply equals traffic share. That is how a naive
+drill-down turns a single-condition answer into a four-condition one, each extra clause explaining
+nothing and each one wrong against an answer key.
 
 The LLM receives a finished Evidence Bundle and writes 3–5 sentences. It never queries, never
 computes, and cannot inflate a figure: `narrator/guardrail.py` extracts every number from the
 prose and rejects any absent from the bundle — including a genuine number wearing invented units,
-so `18.33` written as `$18.33M` fails.
+since a real figure restated at the wrong magnitude reads as fabricated to anyone checking it.
 
 ### Detection
 
@@ -109,13 +107,14 @@ Three interchangeable detectors behind one contract, selected via `config.detect
 - **`isolation_forest`** — scikit-learn over a per-hour feature vector
 
 Thresholds are **calibrated from the data**, not hardcoded (`data/calibration.py`): each metric's
-floor derives from its own natural volatility, because "how big is big" differs wildly per metric.
-Measured here, fill_rate settles near 2.8% while CTR needs 84% — there are only 74,940 clicks
-across 9M events, so daily CTR is inherently noisy.
+floor derives from its own natural volatility, measured over like-for-like hours. "How big is big"
+differs enormously per metric — a ratio built on millions of requests is stable, while one built
+on a few thousand clicks swings wildly — so a single shared threshold either drowns in false
+positives or misses everything.
 
-Detection runs on **every factor, not just revenue.** Jun 29–30 are the two highest-revenue days
-in the dataset while APAC fill rate halved: traffic growth masked a real regression, and a
-revenue-only detector never sees it.
+Detection runs on **every factor, not just revenue.** A regression inside one factor can be masked
+by growth in another, leaving the headline metric flat while something is genuinely broken
+underneath. A revenue-only detector never sees it.
 
 ### OSS Stack integration — Langfuse
 
@@ -148,8 +147,9 @@ committed at [`librechat.yaml`](librechat.yaml) (no real keys).
 | Dashboard | React 19 + TypeScript + Vite, served by nginx |
 | Deployment | Docker Compose on EC2, nginx + Let's Encrypt, secrets in SSM Parameter Store |
 
-**241 tests**, including a regression suite pinning all four planted anomalies to their exact
-expected segments — the Jun 21 case asserts the system names *no* segment.
+**241 tests**, including a regression suite that pins each known anomaly in the provided dataset
+to its expected segment — and asserts that a population-wide move localizes to *nothing*, so a
+false positive fails the build like any other regression.
 
 ## Run it locally
 
@@ -180,13 +180,23 @@ a half-started stack from a working one.
 
 ```
 GET  /health                    engine + Langfuse status
-GET  /bundles                   investigation history
-POST /investigate               run one — bundle in ~2s, no narrative, no LLM in the path
+POST /investigate               run one — bundle in seconds, no narrative, no LLM in the path
 POST /narrate/{id}              add the prose, reattached to the same trace
 GET  /bundle/{id}               retrieve stored evidence
+GET  /bundles                   investigation history
+GET  /series/{id}               hourly actual-vs-expected behind the chart
+GET  /trace/{id}                the investigation's steps, in-app
+POST /scan                      sweep a blind window — background job
+GET  /scan/{job_id}             poll it
+GET  /dashboard?since=          incident feed, polled for live updates
 POST /v1/chat/completions       OpenAI-compatible; LibreChat points here
 GET  /chat/sessions             past conversations with history
 ```
+
+**`POST /scan` is the unseen-incident path.** Point it at a date range with no prior knowledge of
+what happened: it sweeps every metric globally *and* every value of every dimension, folds echoes
+of the same underlying event, and localizes the top findings. A full sweep is roughly 50 queries,
+so it runs as a background job you poll.
 
 `/investigate` is deliberately LLM-free so it can be called twice and diffed: same input, same
 bundle.
@@ -213,13 +223,9 @@ Fully reproducible from [`deploy/`](deploy/) — bootstrap script, IAM policy, n
 Stated plainly, because trustworthiness is the point.
 
 - **The unseen-incident bundle is not yet included.** Added when the fresh slice is released.
-- **`/chat` detects but does not localize.** The conversational path runs a detection-only
-  pipeline, so it reports the move without naming the segment; `/investigate` does the full
-  drill-down. Being unified.
-- **Global discovery is weaker than targeted investigation.** Handed a window, drill-down scores
-  4/4. Sweeping blind, only anomalies large enough to move the whole population surface — a 50%
-  collapse confined to 2% of traffic reads as −1% overall. Per-segment scanning addresses this
-  and is partially in place.
+- **A blind sweep returns more findings than distinct events.** One underlying cause surfaces
+  through several metrics and several segments at once. Echo-folding groups the obvious
+  duplicates, but the ranked list is still longer than the number of real incidents behind it.
 - **Langfuse trace links currently require a login.** Programmatic publishing did not take effect
   on this Langfuse version; individual traces can be shared from the UI.
 

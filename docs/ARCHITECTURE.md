@@ -69,10 +69,10 @@ uniform, population-wide move correctly localises to **nothing**.
 
 That distinction is the core design decision. Ranking on raw contribution instead of lift picks
 whichever segment carries the most traffic, because for a uniform effect contribution share
-simply equals traffic share. Measured against the four planted anomalies, raw contribution scored
-**0/4**, expanding `Android 15` into `Android 15 AND tier_2 AND EU AND Galaxy A54` — three extra
-conditions that explain nothing and would each be wrong against an answer key. Lift scores
-**4/4**.
+simply equals traffic share. Both were implemented and measured against the known anomalies in
+the provided dataset: contribution-ranking localized none of them correctly, turning
+single-condition answers into four-condition ones where each extra clause explains nothing and
+each would be wrong against an answer key. Lift-ranking localized all of them.
 
 ## Detection methodology
 
@@ -90,17 +90,28 @@ Two decisions matter more than the choice of detector.
 
 **Thresholds are calibrated, not hardcoded** (`data/calibration.py`). Each metric's minimum
 effect size is derived from its own natural volatility — measured on like-for-like hours — because
-"how big is big" is metric-specific. On this dataset that yields ≈2.8% for fill_rate and ≈84% for
-CTR: with only 74,940 clicks across 9M events, daily CTR swings wildly and a shared threshold
-would either drown in false positives or miss everything.
+"how big is big" is metric-specific. A ratio built on millions of requests is stable and a small
+move is real; a ratio built on a few thousand clicks swings wildly and the same move is noise.
+One shared threshold either drowns in false positives or misses everything.
 
-**Detection runs per factor, not on revenue alone.** Jun 29–30 are the two highest-revenue days
-in the dataset while APAC fill rate halved — organic traffic growth masked a real regression. A
-revenue-only detector never sees it.
+**Detection runs per factor, not on revenue alone.** A regression inside one factor can be hidden
+by growth in another, leaving the headline metric flat while something is genuinely broken
+underneath. A revenue-only detector never sees it.
 
 Multi-day anomalies are merged into a single incident before investigation
 (`rca/incidents.py`); at hourly grain a three-day anomaly would otherwise raise ~72 separate
 alerts and produce 72 near-identical bundles.
+
+## Blind discovery
+
+`POST /scan` is the unseen-incident path. Given only a date range and no prior knowledge of what
+happened, it sweeps every metric globally *and* every value of every dimension, folds echoes of
+the same underlying event, and localizes the strongest findings. A full sweep is roughly 50
+queries, so it runs as a background job that the dashboard polls.
+
+That per-segment pass matters: a large collapse confined to a small slice of traffic barely moves
+the population metric, so a global-only sweep is blind to exactly the anomalies most worth
+finding.
 
 ## Diagnosis, and why it can be trusted
 
@@ -108,9 +119,9 @@ The narrator receives a completed Evidence Bundle and writes 3–5 sentences. It
 access and performs no arithmetic.
 
 `narrator/guardrail.py` then extracts every number from the prose and rejects any that is not
-present in the evidence. It also rejects a genuine number wearing invented units — a live run
-produced `$18.33M` from a bundle value of `18.33`, every digit real but the magnitude inflated a
-millionfold. Digit-matching alone passed it; the guardrail now fails it.
+present in the evidence. It also rejects a genuine number wearing invented units: a real figure
+restated with an added currency symbol or scale suffix passes a naive digit check while
+overstating the value by orders of magnitude, and reads as fabricated to anyone verifying it.
 
 The verdict is recorded on the bundle as `narrative_verification`, so a failed check is visible
 rather than silent.
@@ -142,13 +153,13 @@ ignore unknown keys, so one endpoint serves both LibreChat and the dashboard wit
 | `hourly_summary` | Pre-aggregated sums per hour × dimension |
 | `investigations` | Completed bundles, `ReplacingMergeTree` |
 
-`advertiser_id` is empty on all 1,972,090 unfilled requests, so advertiser dimensions exist only
+`advertiser_id` is empty on every unfilled request, so advertiser dimensions exist only
 *after* a fill. An inner join silently returns `fill_rate = 1.0`; every join is therefore a
 `LEFT JOIN`, and fill-rate drill-downs never scan advertiser dimensions.
 
-Ratios are always `sum / sum` over the group, never an average of per-row ratios — averaging
-ratios skews results by up to 2.8% here, and differently per region, which would distort exactly
-the segment comparisons the drill-down depends on.
+Ratios are always `sum / sum` over the group, never an average of per-row ratios. Averaging
+ratios skews the result, and skews it differently per segment — which would distort exactly the
+segment comparisons the drill-down depends on.
 
 Storing results back into ClickHouse keeps it the single datastore: investigation history is
 itself queryable in SQL.
