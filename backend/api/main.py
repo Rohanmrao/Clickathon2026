@@ -27,7 +27,7 @@ from config import LANGFUSE
 from data import store
 from data.client import clickhouse_available
 from models import EvidenceBundle, Window
-from narrator import trace_read
+from narrator import narrate, trace_read
 
 app = FastAPI(title="Automated Root-Cause Analyst")
 app.add_middleware(
@@ -247,6 +247,15 @@ def _diagnosis_text(bundle: EvidenceBundle) -> str:
     return "\n".join(lines)
 
 
+def _fmt_num(x: float | None) -> str:
+    """Human-readable number for narration: thousands-grouped for large counts
+    (requests/revenue), plain significant digits for ratios (fill_rate/ecpm). Avoids the
+    f-string ':g' format flipping large values to scientific notation (778100 -> 7.781e+05)."""
+    if x is None:
+        return "—"
+    return f"{x:,.0f}" if abs(x) >= 1000 else f"{x:.4g}"
+
+
 def _replay_text(bundle: EvidenceBundle) -> str:
     """End-to-end walkthrough of a stored investigation, built deterministically from the
     bundle — every number below is read from stored evidence, none is generated. This is the
@@ -258,15 +267,15 @@ def _replay_text(bundle: EvidenceBundle) -> str:
              f"{bundle.target_window.start:%b %d %H:%M} – {bundle.target_window.end:%b %d %H:%M}\n"]
 
     lines.append(
-        f"**1 — Detection.** {bundle.metric} came in at **{a.observed:.4g}** against an expected "
-        f"**{a.expected:.4g}** ({bundle.baseline_window.description}), a move of "
+        f"**1 — Detection.** {bundle.metric} came in at **{_fmt_num(a.observed)}** against an expected "
+        f"**{_fmt_num(a.expected)}** ({bundle.baseline_window.description}), a move of "
         f"**{a.pct_delta * 100:+.1f}%** (robust score {a.score:.1f}). That cleared both the "
         f"statistical and the calibrated effect-size gate, so an investigation was opened."
     )
 
     fd = bundle.factor_decomposition
     if fd and fd.factors:
-        parts = [f"{f.factor} ({f.from_:.4g} → {f.to:.4g})" for f in fd.factors]
+        parts = [f"{f.factor} ({_fmt_num(f.from_)} → {_fmt_num(f.to)})" for f in fd.factors]
         lines.append(
             f"**2 — Which factor moved.** The metric was decomposed ({fd.method}) into: "
             f"{'; '.join(parts)}. **{fd.primary_factor}** carried the change and became the "
@@ -277,7 +286,7 @@ def _replay_text(bundle: EvidenceBundle) -> str:
         steps = []
         for node in bundle.drilldown:
             seg = " AND ".join(f"{k}={v}" for k, v in node.segment.items()) or "(all)"
-            move = (f", {node.metric_from:.4g} → {node.metric_to:.4g}"
+            move = (f", {_fmt_num(node.metric_from)} → {_fmt_num(node.metric_to)}"
                     if node.metric_from is not None and node.metric_to is not None else "")
             steps.append(f"  - depth {node.depth}, split by `{node.split_dimension}` → "
                          f"**{seg}** [{node.status}] ({node.contribution_pct * 100:+.1f}% of the delta{move})")
@@ -307,6 +316,13 @@ def _replay_text(bundle: EvidenceBundle) -> str:
     return "\n\n".join(lines)
 
 
+# Bundle fields the general assistant may see as context — evidence only, no SQL/queries.
+_CHAT_CONTEXT_FIELDS = {
+    "investigation_id", "metric", "target_window", "anomaly", "factor_decomposition",
+    "drilldown", "localized_segment", "ruled_out", "narrative",
+}
+
+
 def _handle_chat(
     req: chatlib.ChatCompletionRequest, context_id: str, method: str | None = None
 ) -> dict:
@@ -319,30 +335,19 @@ def _handle_chat(
 
     slots = chatlib.fill_slots(req)
     intent = chatlib.classify(req, slots)
-    # With the dashboard's bundle context, an under-specified question ("what was ruled out?",
-    # "any incidents?") is about the anomaly ON SCREEN — answer from that bundle instead of
-    # asking for metric/window or scanning. Fully-specified investigate requests still run.
-    if req.bundle_id and intent in ("followup", "scan"):
-        intent = "replay"
 
     store.upsert_session(context_id)
     if req.last_user_message():
         store.add_turn(context_id, "user", req.last_user_message())
 
-    if intent == "greeting":
-        content = ("I investigate metric anomalies. Ask me something like "
-                   "\"why did revenue drop on June 23?\" and I'll find the responsible segment.")
-    elif intent == "replay":
-        # Rebuilt from the stored bundle — no re-detection, no LLM, no invented numbers.
-        # The dashboard sends the showcased anomaly's bundle_id, so "this anomaly" means the one
-        # on screen; without it, `slots.metric` narrows to that metric's latest anomaly, else
-        # the overall latest.
+    # Explicit "replay / explain this investigation" → the deterministic walkthrough, rebuilt from
+    # the stored bundle (no re-detection, no LLM, no invented numbers). The dashboard sends the
+    # showcased anomaly's bundle_id, so "this anomaly" is the one on screen; otherwise narrow to
+    # the named metric's latest anomaly, else the overall latest.
+    if intent == "replay":
         bundle = (store.load_bundle(req.bundle_id) if req.bundle_id
                   else store.load_latest_anomaly(slots.metric))
-        if bundle is None:
-            content = ("No detected anomaly is stored yet — run an investigation first "
-                       "(e.g. \"why did fill rate drop on June 23?\") and then ask me to replay it.")
-        else:
+        if bundle is not None:
             payload = chatlib.completion(
                 _replay_text(bundle), context_id=context_id, slots=slots,
                 investigation=bundle.model_dump(mode="json"),
@@ -351,13 +356,12 @@ def _handle_chat(
             )
             store.add_turn(context_id, "assistant", payload["choices"][0]["message"]["content"])
             return payload
-    elif intent == "scan":
-        content = ("Ask me about a specific metric and period and I'll investigate - "
-                   "for example \"why did fill rate drop on June 23?\".")
-    elif intent == "followup":
-        content = chatlib.ask_for_missing(slots)
-    else:
-        bundle = _run_investigation(slots, context_id, method)  # real detection, traced + persisted
+        # No stored anomaly to replay — fall through to a normal helpful answer.
+
+    # A fully-specified request ("why did fill rate drop on June 23?") → run the real, traced
+    # investigation. Everything below this line is handled by the general assistant.
+    if intent == "investigate":
+        bundle = _run_investigation(slots, context_id, method)
         payload = chatlib.completion(
             _diagnosis_text(bundle), context_id=context_id, slots=slots,
             investigation=bundle.model_dump(mode="json"),
@@ -369,6 +373,20 @@ def _handle_chat(
         store.add_turn(context_id, "assistant", payload["choices"][0]["message"]["content"])
         return payload
 
+    # Anything else (chit-chat, general questions, under-specified asks) → behave like a normal AI
+    # assistant, with the on-screen anomaly passed as optional context so bundle questions still
+    # land. Falls back to a short prompt if the LLM is unavailable.
+    ctx_bundle = store.load_bundle(req.bundle_id) if req.bundle_id else None
+    ctx_json = ctx_bundle.model_dump_json(include=_CHAT_CONTEXT_FIELDS) if ctx_bundle else None
+    history = [(m.role, m.content) for m in req.messages if m.content and m.role in ("user", "assistant")]
+    try:
+        content = narrate.general_reply(history, ctx_json)
+    except Exception:
+        # LLM unreachable (e.g. no AWS Bedrock credentials). Stay useful: the deterministic
+        # replay/explain and investigate paths still work without an LLM.
+        content = ("The assistant model is unavailable right now, so I can't answer that freely. "
+                   "I can still **replay** or **explain** the investigation on screen — try "
+                   "\"explain this investigation\".")
     payload = chatlib.completion(content, context_id=context_id, slots=slots)
     store.add_turn(context_id, "assistant", content)
     return payload

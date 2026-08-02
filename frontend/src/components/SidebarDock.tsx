@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { InvestigationRow } from "../types";
 import { sendChat, type ChatTurn } from "../api";
 import { MarkdownLite } from "./MarkdownLite";
@@ -21,6 +21,11 @@ const EnvelopeIcon = (
 const RefreshIcon = (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <path d="M23 4v6h-6" /><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
+  </svg>
+);
+const NewChatIcon = (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M12 20h9" /><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
   </svg>
 );
 
@@ -51,7 +56,7 @@ export function SidebarDock({
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
-  const [sessionId] = useState(() => crypto.randomUUID());
+  const [sessionId, setSessionId] = useState(() => crypto.randomUUID());
   const scroller = useRef<HTMLDivElement>(null);
 
   const toggle = (p: Panel) => setOpen((o) => (o === p ? "none" : p));
@@ -59,6 +64,25 @@ export function SidebarDock({
   useEffect(() => {
     scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: "smooth" });
   }, [turns, open]);
+
+  // Start a brand-new chat thread: fresh (empty) conversation + a new session id, so the backend
+  // opens a new chat rather than appending to the old one.
+  const newChat = useCallback(() => {
+    setTurns([]);
+    setDraft("");
+    setSessionId(crypto.randomUUID());
+  }, []);
+
+  // Selecting a different anomaly automatically opens a new chat scoped to it. Skip the first
+  // assignment (initial bundle load) so we don't spin up a second session on mount.
+  const firstBundle = useRef(true);
+  useEffect(() => {
+    if (firstBundle.current) {
+      firstBundle.current = false;
+      return;
+    }
+    newChat();
+  }, [bundleId, newChat]);
 
   const send = async () => {
     const text = draft.trim();
@@ -120,7 +144,10 @@ export function SidebarDock({
               </span>
             </span>
           </div>
-          <button className="ap-close" onClick={() => setOpen("none")} aria-label="Close assistant">{CloseIcon}</button>
+          <div className="ap-actions">
+            <button className="ap-close" onClick={newChat} aria-label="New chat" title="New chat">{NewChatIcon}</button>
+            <button className="ap-close" onClick={() => setOpen("none")} aria-label="Close assistant">{CloseIcon}</button>
+          </div>
         </div>
         <div className="assistant-pop-body chat-body" ref={scroller}>
           {turns.length === 0 && (

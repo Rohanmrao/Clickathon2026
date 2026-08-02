@@ -82,9 +82,16 @@ _SCAN_HINTS = ("what's wrong", "whats wrong", "anything wrong", "any issues", "a
 # The demo flow: the dashboard shows an anomaly, the user asks the chat to replay it — the
 # answer is rebuilt from the stored bundle, so no re-detection runs and no number is invented.
 _REPLAY_HINTS = ("replay", "walk me through", "walk through", "end to end", "end-to-end",
-                 "explain the investigation", "explain this anomaly", "explain this incident",
-                 "explain the anomaly", "explain the incident", "how was this investigated",
-                 "how did the investigation")
+                 "explain the investigation", "explain this investigation", "explain the anomaly",
+                 "explain this anomaly", "explain the incident", "explain this incident",
+                 "explain the drop", "explain this drop", "explain this",
+                 "break it down", "break this down", "breakdown",
+                 "recap", "step by step", "step-by-step",
+                 "summarize the investigation", "summarise the investigation",
+                 "summarize this investigation", "summarise this investigation",
+                 "how was this investigated", "how did the investigation",
+                 "how did you investigate", "how did you localize", "how did you localise",
+                 "go through the investigation")
 
 
 # ---- OpenAI wire types -----------------------------------------------------

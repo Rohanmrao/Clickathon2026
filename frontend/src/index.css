@@ -750,6 +750,7 @@ body {
   background: linear-gradient(140deg, var(--content-secondary-dark), var(--content-secondary-bright));
 }
 .ap-title { display: flex; align-items: center; gap: var(--group-gap-xl); }
+.ap-actions { display: flex; align-items: center; gap: var(--group-gap-l); }
 .ap-avatar {
   flex: none;
   width: var(--icon-2xl);
