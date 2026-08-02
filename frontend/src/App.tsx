@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { getBundle, getHealth, getTrace, investigate, listBundles, listIncidents, narrate, type IncidentRow } from "./api";
+import { getBundle, getHealth, getStreamStatus, getTrace, investigate, listBundles, listIncidents,
+         narrate, startStream, stopStream, type IncidentRow, type StreamStatus } from "./api";
 import sampleBundle from "./sample_bundle.json";
 import { AnomalyCard } from "./components/AnomalyCard";
 import { DiagnosisCard } from "./components/DiagnosisCard";
@@ -9,6 +10,7 @@ import { RuledOutPanel } from "./components/RuledOutPanel";
 import { SidebarDock } from "./components/SidebarDock";
 import { TraceDrawer } from "./components/TraceDrawer";
 import { SweepDrawer } from "./components/SweepDrawer";
+import { StreamBar } from "./components/StreamBar";
 import { ClickathonMark } from "./components/ClickathonMark";
 import { DateField } from "./components/DateField";
 import type { EvidenceBundle, InvestigationRow } from "./types";
@@ -17,6 +19,8 @@ import type { EvidenceBundle, InvestigationRow } from "./types";
 const TRACE_SNAPSHOT_DELAY_MS = 10000;
 // Engine status is a live condition, so re-poll it rather than trusting page load.
 const HEALTH_POLL_MS = 30000;
+// Ticks are ~1-2.5s, so poll a touch faster than a batch to keep the bar honest.
+const STREAM_POLL_MS = 1500;
 
 const METRICS = ["revenue", "fill_rate", "ecpm", "requests", "ctr", "rpr", "render_rate"];
 
@@ -52,6 +56,8 @@ export default function App() {
   const [history, setHistory] = useState<InvestigationRow[]>([]);
   const [traceOpen, setTraceOpen] = useState(false);
   const [sweepOpen, setSweepOpen] = useState(false);
+  const [stream, setStream] = useState<StreamStatus | null>(null);
+  const streamPoll = useRef<number | undefined>(undefined);
   const timer = useRef<number | undefined>(undefined);
 
   // Theme lives on <body> so page backgrounds (not just cards) follow variables-final.css.
@@ -86,12 +92,48 @@ export default function App() {
       () => getHealth().then((h) => h && setEngine(h.engine)),
       HEALTH_POLL_MS,
     );
+    // Pick up a replay already in flight (e.g. after a page refresh mid-stream).
+    getStreamStatus().then((s) => {
+      if (s && s.status === "running") { setStream(s); beginPolling(); }
+    });
     return () => {
       window.clearInterval(timer.current);
       window.clearInterval(health);
+      window.clearInterval(streamPoll.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Real-time mode: poll status, and refresh the incident feed so detections found mid-replay
+  // show up in the switcher without waiting for the run to finish.
+  const beginPolling = () => {
+    window.clearInterval(streamPoll.current);
+    let lastHits = -1;
+    streamPoll.current = window.setInterval(async () => {
+      const s = await getStreamStatus();
+      if (!s) return;
+      setStream(s);
+      const hits = s.detections?.length ?? 0;
+      if (hits !== lastHits) { lastHits = hits; listIncidents().then(setIncidents); refreshHistory(); }
+      if (s.status !== "running") {
+        window.clearInterval(streamPoll.current);
+        listIncidents().then(setIncidents);
+      }
+    }, STREAM_POLL_MS);
+  };
+
+  const onStartStream = async () => {
+    const s = await startStream();          // reset:true — truncates, then refills from scratch
+    if (!s) return;
+    setStream(s);
+    setIncidents([]);                       // the old feed describes data that was just truncated
+    beginPolling();
+  };
+
+  const onStopStream = async () => {
+    const s = await stopStream();
+    if (s) setStream(s);
+  };
 
   const selectIncident = (id: string) => {
     setSelectedId(id);
@@ -235,6 +277,9 @@ export default function App() {
             <button className="ghost-btn" onClick={() => setTraceOpen(true)}>Open trace</button>
           )}
           <button className="ghost-btn" onClick={() => setSweepOpen(true)}>Find anomalies</button>
+          <button className="ghost-btn" onClick={onStartStream} disabled={stream?.status === "running"}>
+            {stream?.status === "running" ? "Streaming…" : "Start stream"}
+          </button>
           <button className="primary-btn" onClick={() => run()} disabled={running}>
             {running ? "Investigating…" : "Investigate"}
           </button>
@@ -247,6 +292,10 @@ export default function App() {
           <code> CLICKHOUSE_* </code> in <code>.env</code>, then recreate the backend
           (<code>docker compose up -d backend</code>).
         </div>
+      )}
+
+      {stream && stream.status !== "idle" && (
+        <StreamBar stream={stream} onStop={onStopStream} />
       )}
 
       <main className="main-grid">

@@ -1335,3 +1335,58 @@ body {
 }
 .sw-head { flex-wrap: wrap; }
 .sw-head .sw-delta { margin-left: auto; }
+
+/* ---------- real-time mode: live replay strip under the topbar ---------- */
+.stream-bar {
+  margin: var(--base-12) var(--all-padding-xl) 0;
+  padding: var(--base-10) var(--base-12);
+  border: var(--hairline) solid var(--border-neutral-activated);
+  border-radius: var(--all-radius-xs);
+  background: var(--bg-elevated);
+}
+.stream-bar.is-live { border-color: var(--border-secondary-default); background: var(--bg-secondary-bright-default); }
+
+.sb-head { display: flex; align-items: center; gap: var(--all-gap-s); flex-wrap: wrap; }
+.sb-title {
+  display: inline-flex; align-items: center; gap: var(--group-gap-l);
+  font-size: var(--font-size-caption-2);
+  letter-spacing: 0.14em; text-transform: uppercase; font-weight: 700;
+  color: var(--content-display-text-title-main);
+}
+.sb-pulse {
+  width: var(--base-8); height: var(--base-8); border-radius: var(--round);
+  background: var(--content-secondary-bright);
+  animation: blink 1.4s infinite;
+}
+.sb-meta { font-size: var(--font-size-caption-2); color: var(--content-display-text-caption-dimmed); }
+.sb-stop { margin-left: auto; }
+
+.sb-track {
+  margin-top: var(--base-8);
+  height: var(--base-4);
+  border-radius: var(--round);
+  background: var(--bg-dimmed);
+  overflow: hidden;
+}
+.sb-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--content-secondary-dark), var(--content-secondary-bright));
+  transition: width 0.4s ease;
+}
+
+.sb-error { margin-top: var(--group-gap-s); font-size: var(--font-size-caption-1); color: var(--content-negative-main); }
+.sb-waiting { margin-top: var(--group-gap-s); font-size: var(--font-size-caption-1); color: var(--content-display-text-caption-dimmed); }
+
+.sb-hits { margin-top: var(--base-8); }
+.sb-hit-list { display: flex; flex-wrap: wrap; gap: var(--base-6); margin-top: var(--group-gap-s); }
+.sb-hit {
+  display: inline-flex; align-items: baseline; gap: var(--group-gap-l);
+  padding: var(--base-2) var(--base-8);
+  border: var(--hairline) solid var(--border-negative-default);
+  border-radius: var(--round);
+  background: var(--bg-negative-bright-default);
+  font-size: var(--font-size-caption-2);
+}
+.sb-hit .is-drop { color: var(--content-negative-main); font-weight: 700; }
+.sb-hit .is-spike { color: var(--content-positive-main); font-weight: 700; }
+.sb-hit-hour { color: var(--content-display-text-caption-dimmed); }
