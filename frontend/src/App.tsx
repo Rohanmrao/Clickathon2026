@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { getBundle, getHealth, investigate, listBundles, listIncidents, narrate, type IncidentRow } from "./api";
+import { getBundle, getHealth, getTrace, investigate, listBundles, listIncidents, narrate, type IncidentRow } from "./api";
 import sampleBundle from "./sample_bundle.json";
 import { AnomalyCard } from "./components/AnomalyCard";
 import { DiagnosisCard } from "./components/DiagnosisCard";
@@ -12,6 +12,9 @@ import { SweepDrawer } from "./components/SweepDrawer";
 import { ClickathonMark } from "./components/ClickathonMark";
 import { DateField } from "./components/DateField";
 import type { EvidenceBundle, InvestigationRow } from "./types";
+
+// Langfuse's worker ingests spans asynchronously; give it this long before snapshotting.
+const TRACE_SNAPSHOT_DELAY_MS = 10000;
 
 const METRICS = ["revenue", "fill_rate", "ecpm", "requests", "ctr", "rpr", "render_rate"];
 
@@ -125,6 +128,13 @@ export default function App() {
     if (live && b.investigation_id) {
       const narrated = await narrate(b.investigation_id);
       if (narrated) setBundle(narrated); // fills the Diagnosis card
+    }
+    // Warm the trace snapshot. Reading /trace is what persists it to ClickHouse, and Langfuse
+    // ingests spans asynchronously — so wait for the worker, then read once. Without this the
+    // history only survives for investigations someone happened to open the drawer on.
+    if (live && b.investigation_id) {
+      const id = b.investigation_id;
+      window.setTimeout(() => void getTrace(id), TRACE_SNAPSHOT_DELAY_MS);
     }
     getHealth().then((h) => h && setEngine(h.engine)); // reflect offline/live after the run
     refreshHistory();

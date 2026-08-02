@@ -1306,3 +1306,31 @@ body {
   cursor: pointer;
 }
 .sw-action:hover { text-decoration: underline; }
+
+/* Real findings must be unmistakable next to their echoes: accent rail + tinted card + badge. */
+.sw-section {
+  margin-top: var(--all-gap-s);
+  font-size: var(--font-size-caption-2);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: var(--content-display-text-caption-dimmed);
+}
+.sweep-row.is-anomaly {
+  border-color: var(--border-negative-default);
+  border-left-width: var(--base-2);
+  border-left-color: var(--content-negative-main);
+  background: var(--bg-negative-bright-default);
+}
+.sw-badge {
+  padding: 0 var(--base-6);
+  border-radius: var(--round);
+  background: var(--content-negative-main);
+  color: var(--on-accent);
+  font-size: var(--font-size-caption-2);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.sw-head { flex-wrap: wrap; }
+.sw-head .sw-delta { margin-left: auto; }

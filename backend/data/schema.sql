@@ -129,7 +129,7 @@ ORDER BY investigation_id;
 
 -- Snapshot of a finished investigation's Langfuse trace, reshaped for the dashboard drawer
 -- (see narrator/trace_read.py). Written the first time the trace is read, so a trace stays
--- readable forever even if Langfuse is reset or unreachable — Langfuse owns the live trace,
+-- readable forever even if Langfuse is reset or unreachable â€” Langfuse owns the live trace,
 -- this owns the history.
 CREATE TABLE IF NOT EXISTS trace_views (
     investigation_id String,

@@ -27,7 +27,10 @@ def _statements(names: tuple[str, ...]) -> list[str]:
     # Strip full-line comments BEFORE splitting on ';' — comment lines here contain
     # semicolons of their own (e.g. "is_* as UInt8; revenue Float64; ..."), which would
     # otherwise be split into bogus fragments.
-    lines = [line for line in SCHEMA.read_text().splitlines() if not line.strip().startswith("--")]
+    # encoding pinned: the default is locale-dependent, so a schema.sql written on Windows
+    # (cp1252) read fine on the host and blew up inside the Linux container.
+    text = SCHEMA.read_text(encoding="utf-8")
+    lines = [line for line in text.splitlines() if not line.strip().startswith("--")]
     cleaned = "\n".join(lines)
     raw = [s.strip() for s in cleaned.split(";") if s.strip()]
     return [s for s in raw if any(f"EXISTS {name}" in s for name in names)]

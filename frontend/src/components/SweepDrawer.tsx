@@ -81,13 +81,18 @@ export function SweepDrawer({
   };
 
   const incidents = job?.result?.incidents ?? [];
-  const primaries = incidents.filter((i) => i.role === "primary");
-  const echoes = incidents.filter((i) => i.role !== "primary");
+  // Worst first: `score` is the backend's own severity ranking (|pct move| x volume), so the
+  // biggest real incident leads the list rather than whatever the sweep happened to hit first.
+  const bySeverity = (a: ScanIncident, b: ScanIncident) =>
+    (b.score ?? 0) - (a.score ?? 0) || Math.abs(b.peak_pct_delta) - Math.abs(a.peak_pct_delta);
+  const primaries = incidents.filter((i) => i.role === "primary").sort(bySeverity);
+  const echoes = incidents.filter((i) => i.role !== "primary").sort(bySeverity);
 
-  const row = (inc: ScanIncident) => (
-    <li key={inc.incident_id} className="sweep-row">
+  const row = (inc: ScanIncident, isAnomaly = false) => (
+    <li key={inc.incident_id} className={`sweep-row ${isAnomaly ? "is-anomaly" : ""}`}>
       <div className="sw-head">
         <span className="sw-metric mono">{baseMetric(inc.metric)}</span>
+        {isAnomaly && <span className="sw-badge">anomaly</span>}
         <span className={`sw-delta mono ${inc.peak_pct_delta < 0 ? "is-drop" : "is-spike"}`}>
           {pct(inc.peak_pct_delta)}
         </span>
@@ -140,7 +145,12 @@ export function SweepDrawer({
           )}
 
           {primaries.length > 0 && (
-            <ul className="sweep-list">{primaries.map(row)}</ul>
+            <>
+              <div className="sw-section">
+                {primaries.length} anomal{primaries.length === 1 ? "y" : "ies"} · worst first
+              </div>
+              <ul className="sweep-list">{primaries.map((inc) => row(inc, true))}</ul>
+            </>
           )}
 
           {echoes.length > 0 && (
@@ -148,7 +158,9 @@ export function SweepDrawer({
               <button className="ts-toggle" onClick={() => setShowEchoes((v) => !v)}>
                 {showEchoes ? "Hide" : "Show"} {echoes.length} echo{echoes.length === 1 ? "" : "es"} of these findings
               </button>
-              {showEchoes && <ul className="sweep-list is-echo">{echoes.map(row)}</ul>}
+              {showEchoes && (
+                <ul className="sweep-list is-echo">{echoes.map((inc) => row(inc, false))}</ul>
+              )}
             </>
           )}
         </div>
