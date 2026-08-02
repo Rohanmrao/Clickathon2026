@@ -4,6 +4,26 @@
     "enriched_table": "events_full",
     "hourly_table": "hourly_summary"
   },
+  "datasets": {
+    "dev": {
+      "events": "ad_events",
+      "enriched": "events_full",
+      "hourly": "hourly_summary",
+      "apps": "apps_dim",
+      "advertisers": "advertisers_dim",
+      "geo_device": "geo_device_dim"
+    },
+    "unseen": {
+      "events": "ad_events_unseen",
+      "enriched": "events_full_unseen",
+      "hourly": "hourly_summary_unseen",
+      "apps": "apps_dim_unseen",
+      "advertisers": "advertisers_dim_unseen",
+      "geo_device": "geo_device_dim_unseen"
+    }
+  },
+  "active_dataset": "dev",
+  "history_dataset": "dev",
   "metrics": {
     "base_events": {
       "requests": "count(*)",

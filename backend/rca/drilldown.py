@@ -16,6 +16,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from config import config
+from config import hourly_source as _hourly
 from data.calibration import measure_natural_noise
 from data.client import run_query
 from metrics import safe_div
@@ -25,7 +26,6 @@ from narrator.tracing import phase
 _M = config()["metrics"]
 _RCA = config()["rca"]
 _DET = config()["detection"]
-_HOURLY = config()["clickhouse"]["hourly_table"]
 _ALLOWED = set(_RCA["drilldown_dimensions"])
 _COMPONENTS = ("requests", "fills", "impressions", "clicks", "revenue")
 
@@ -107,14 +107,14 @@ def _split(row: list, offset: int) -> tuple[dict, dict]:
 
 
 def _pop(where_sql: str, params: dict, depth: int) -> tuple[dict, dict, str]:
-    sql = f"SELECT {_sum_cols()} FROM {_HOURLY} WHERE ({_TGT} OR {_BASE}){where_sql}"
+    sql = f"SELECT {_sum_cols()} FROM {_hourly()} WHERE ({_TGT} OR {_BASE}){where_sql}"
     res = run_query(sql, params, name=f"sql:population:{depth}")
     obs, exp = _split(res["rows"][0], 0)  # equal-length windows -> baseline sums ARE the expectation
     return obs, exp, res["resolved_sql"]
 
 
 def _by_dim(dim: str, where_sql: str, params: dict, depth: int) -> tuple[list, str]:
-    sql = f"SELECT {dim} AS seg, {_sum_cols()} FROM {_HOURLY} WHERE ({_TGT} OR {_BASE}){where_sql} GROUP BY {dim}"
+    sql = f"SELECT {dim} AS seg, {_sum_cols()} FROM {_hourly()} WHERE ({_TGT} OR {_BASE}){where_sql} GROUP BY {dim}"
     res = run_query(sql, params, name=f"sql:contribution:{dim}")
     out = [(row[0], *_split(row, 1)) for row in res["rows"]]
     return out, res["resolved_sql"]

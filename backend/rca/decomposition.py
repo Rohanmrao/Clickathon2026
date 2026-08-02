@@ -16,12 +16,12 @@ import math
 from datetime import datetime
 
 from config import config
+from config import hourly_source as _hourly
 from data.client import run_query
 from metrics import ecpm, fill_rate, revenue_from_identity, safe_div
 from models import Factor, FactorDecomposition, Window
 
 _RCA = config()["rca"]
-_HOURLY = config()["clickhouse"]["hourly_table"]
 _IDENTITY = _RCA["revenue_identity_factors"]  # ["requests", "fill_rate", "ecpm"]
 _OFFSET_FLOOR = 0.75  # if |net revenue delta| < this * gross factor movement, factors offset -> use share-of-gross
 
@@ -87,7 +87,7 @@ def decompose(metric: str, target: Window, baseline: Window) -> tuple[FactorDeco
     the headline metric regardless of `metric`. Returns (FactorDecomposition, queries).
     """
     cols = ", ".join(f"sumIf({c}, {_TGT}) AS {c}_o, sumIf({c}, {_BASE}) AS {c}_e" for c in _COMPONENTS)
-    sql = f"SELECT {cols} FROM {_HOURLY} WHERE ({_TGT} OR {_BASE})"
+    sql = f"SELECT {cols} FROM {_hourly()} WHERE ({_TGT} OR {_BASE})"
     params = {
         "target_start": _fmt(target.start), "target_end": _fmt(target.end),
         "base_start": _fmt(baseline.start), "base_end": _fmt(baseline.end),

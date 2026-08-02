@@ -15,19 +15,18 @@ aggregates to hourly; sklearn only sees the small hourly frame.
 from __future__ import annotations
 
 from datetime import datetime
-from functools import lru_cache
+from functools import cache
 
 import pandas as pd
 from sklearn.ensemble import IsolationForest
 
 from config import config
+from config import hourly_source as _hourly
 from data.calibration import effect_threshold
 from data.client import run_query
 from metrics import metric_sql
 from models import Anomaly, Window
 from rca.robust import pct_delta
-
-_HOURLY = config()["clickhouse"]["hourly_table"]
 
 _PARAM_KEYS = ("n_estimators", "contamination", "random_state", "min_pct_delta")
 
@@ -86,11 +85,11 @@ def _series_sql(metric: str, mode: str, feature_cols: list[str]) -> str:
         cols += [f"{metric_sql(name, 'rollup')} AS {name}" for name in feature_cols]
     # A ratio col like `sum(requests) AS requests` shadows the source column inside other ratios;
     # prefer the column so sum(requests) isn't read as sum(sum(requests)) (illegal nested aggregation).
-    return (f"SELECT hour, {', '.join(cols)} FROM {_HOURLY} GROUP BY hour ORDER BY hour "
+    return (f"SELECT hour, {', '.join(cols)} FROM {_hourly()} GROUP BY hour ORDER BY hour "
             f"SETTINGS prefer_column_name_to_alias = 1")
 
 
-@lru_cache(maxsize=None)
+@cache
 def _cached_series(metric: str, mode: str, feature_cols: tuple[str, ...]) -> tuple[tuple, tuple, str]:
     """The historical series is identical for every target hour scored against the same
     metric+mode — only the query result matters here, not which hour is being tested.
@@ -106,7 +105,7 @@ def _cached_series(metric: str, mode: str, feature_cols: tuple[str, ...]) -> tup
     return tuple(map(tuple, res["rows"])), tuple(res["columns"]), res["resolved_sql"]
 
 
-@lru_cache(maxsize=None)
+@cache
 def _cached_fit(
     metric: str, mode: str, feature_cols: tuple[str, ...],
     n_estimators: int, contamination, random_state: int,
