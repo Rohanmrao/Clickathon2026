@@ -60,13 +60,22 @@ CLICKHOUSE_DATABASE=$(get clickhouse/database)
 LANGFUSE_PUBLIC_KEY=$(get langfuse/public_key)
 LANGFUSE_SECRET_KEY=$(get langfuse/secret_key)
 LANGFUSE_INIT_USER_PASSWORD=$(get langfuse/init_user_password)
+# THIS BOX runs the team's ONE shared self-hosted Langfuse — every teammate's laptop points at
+# it over HTTPS (see docker-compose.yml's default). So, unlike the rest of the stack, this host
+# does NOT get to default to "external" for its own backend: it must talk to its own langfuse-web
+# container directly, and it must actually START that container (and worker/postgres/clickhouse/
+# redis/minio), which docker-compose.yml gates behind a profile so a bare laptop `docker compose
+# up` does not mint a competing, unsynced instance.
+COMPOSE_PROFILES=self-hosted-langfuse
 # Two different addresses for the same service, deliberately:
 #   LANGFUSE_PUBLIC_HOST - what a BROWSER resolves. Points at the dedicated HTTPS host that
 #                          fronts Langfuse (traces.kangasys.com), so every "Open trace" link a
-#                          judge clicks lands on a reachable page instead of their own machine.
-#                          Uses the stable domain rather than the raw public IP, which changes
-#                          on stop/start.
-#   LANGFUSE_HOST        - container-to-container, set to the service name inside compose.
+#                          judge (or a teammate's laptop) clicks lands on a reachable page instead
+#                          of container-internal DNS. Uses the stable domain rather than the raw
+#                          public IP, which changes on stop/start.
+#   LANGFUSE_HOST        - container-to-container, set to the service name inside compose. Skips
+#                          a pointless internet round trip to reach a container on the same box.
+LANGFUSE_HOST=http://langfuse-web:3000
 LANGFUSE_PUBLIC_HOST=${LANGFUSE_PUBLIC_HOST:-https://traces.kangasys.com}
 LANGFUSE_BASE_URL=https://traces.kangasys.com
 

@@ -1,14 +1,18 @@
 # Running the whole stack with Docker
 
 One command brings up the stack as separate containers. **The RCA ClickHouse stays external**
-(Cloud, via `.env`) — everything else runs locally. Langfuse is self-hosted **v3**, which runs
-its own infra (postgres + clickhouse + redis + minio), separate from the RCA Cloud ClickHouse.
+(Cloud, via `.env`) — so does **Langfuse, by default**: this backend talks to the team's ONE
+shared self-hosted instance at `https://traces.kangasys.com`, not a fresh instance per machine.
+That's deliberate — Langfuse packaged in `docker-compose.yml` used to mean every
+`docker compose up` minted an *independent* instance with its own trace database, so a trace
+recorded on one machine 404'd when read from another (same YAML, unrelated servers, nothing
+synced). See the comment block at the top of `docker-compose.yml` for the full story.
 
 | Service        | Container(s)                                   | URL                    | Notes |
 |----------------|------------------------------------------------|------------------------|-------|
 | Dashboard      | `frontend` (nginx)                             | http://localhost:5173  | The React UI |
 | Backend        | `backend` (FastAPI)                            | http://localhost:8000  | `/health`, `/investigate`, `/v1/chat/completions` |
-| Langfuse       | `langfuse-web` + `langfuse-worker` + `-postgres` / `-clickhouse` / `-redis` / `-minio` | http://localhost:3000 | Self-hosted **v3**; keys pre-seeded |
+| Langfuse       | — (external, shared)                           | https://traces.kangasys.com | Self-hosted **v3**, but only ONE instance for the whole team |
 | LibreChat      | `api` + `mongodb`                              | http://localhost:3080  | Conversational RCA UI |
 | RCA ClickHouse | — (external Cloud)                             | your `CLICKHOUSE_HOST` | Not a container |
 
@@ -16,21 +20,33 @@ its own infra (postgres + clickhouse + redis + minio), separate from the RCA Clo
 
 ```bash
 cp .env.example .env
-# Fill CLICKHOUSE_* with your Cloud service creds. Langfuse dev keys are already filled in.
+# Fill CLICKHOUSE_*. Get your own Langfuse key from https://traces.kangasys.com (log in — don't
+# sign up — then Project Settings -> API Keys -> Create) and fill LANGFUSE_PUBLIC_KEY/SECRET_KEY.
 # (Optional) add AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY to enable Bedrock narration.
 
 docker compose up --build
 ```
 
-First run pulls the Langfuse v3 images (its ClickHouse + MinIO are ~large) and builds the two
-local images (backend, frontend) — budget a few minutes, and expect `langfuse-web` to take an
-extra moment after its ClickHouse/Postgres migrations before `:3000` answers. Compose auto-merges
-`docker-compose.override.yml`, which mounts `librechat.yaml`.
+Only two local images to build (backend, frontend) — no Langfuse infra to pull or migrate, since
+it isn't running here. Compose auto-merges `docker-compose.override.yml`, which mounts
+`librechat.yaml`.
 
 Then open **http://localhost:5173**.
 
-Stop with `Ctrl-C`; `docker compose down` to remove containers (add `-v` to wipe the Langfuse
-postgres/clickhouse/minio + Mongo volumes).
+Stop with `Ctrl-C`; `docker compose down` to remove containers (add `-v` to wipe the Mongo
+volume).
+
+### Prefer a fully local, offline Langfuse instead?
+
+```bash
+COMPOSE_PROFILES=self-hosted-langfuse docker compose up --build
+```
+
+This starts the full `langfuse-web` / `-worker` / `-postgres` / `-clickhouse` / `-redis` /
+`-minio` stack that used to run by default. Uncomment the matching block in `.env.example` (sets
+`LANGFUSE_HOST` and `LANGFUSE_PUBLIC_HOST` to `http://localhost:3000` — leaving only one set
+would ingest into your local instance while trace links still opened the shared one's UI). Your
+traces stay on your machine and are invisible to teammates and to `traces.kangasys.com`.
 
 > **Backend needs the v4 Langfuse SDK.** The tracing code uses `propagate_attributes` /
 > `start_as_current_observation` (Langfuse SDK v3/v4). `backend/Dockerfile` installs `langfuse>=3`
@@ -40,9 +56,10 @@ postgres/clickhouse/minio + Mongo volumes).
 
 - **Backend → ClickHouse**: `CLICKHOUSE_*` from `.env`. If unset/unreachable the backend still
   boots and serves **fixture mode** (`/health` reports `engine: fixture`).
-- **Backend → Langfuse**: `LANGFUSE_HOST` is overridden to `http://langfuse-web:3000` inside the
-  network. The `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` in `.env` are the same keys
-  `LANGFUSE_INIT_*` seeds into `langfuse-web` — so tracing works with no manual UI setup.
+- **Backend → Langfuse**: `LANGFUSE_HOST` defaults to `https://traces.kangasys.com`, the team's
+  shared instance — set `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` to your own personal key
+  from there. Only under `COMPOSE_PROFILES=self-hosted-langfuse` does it point at the internal
+  `langfuse-web:3000`, seeded via `LANGFUSE_INIT_*` with whatever keys you put in `.env`.
 - **Frontend → Backend / LibreChat**: Vite bakes `http://localhost:8000` and
   `http://localhost:3080` at build time (host-browser URLs, since the browser runs on your
   machine). To change them, rebuild: `docker compose build frontend`.
@@ -58,10 +75,13 @@ Without them, investigations still run end-to-end — only the narrative is skip
 
 ## Trace links
 
-Langfuse trace URLs on a bundle are built from `LANGFUSE_HOST`, which is `langfuse-web:3000`
-inside the network — that hostname won't open from your browser. The traces are still recorded;
-find them in the Langfuse UI at **http://localhost:3000** (log in as `admin@clickathon.local`
-/ `LANGFUSE_INIT_USER_PASSWORD` — **don't sign up**, that creates a separate empty org).
+By default `LANGFUSE_HOST` is already the browser-reachable `https://traces.kangasys.com`, so a
+bundle's trace URL opens directly — log in there with your own account (**don't sign up**, that
+creates a separate empty org invisible to the seeded project).
+
+Only under `COMPOSE_PROFILES=self-hosted-langfuse` does `LANGFUSE_HOST` become the
+container-internal `langfuse-web:3000`, which won't open from your browser; find those traces at
+**http://localhost:3000** instead (log in as `admin@clickathon.local` / `LANGFUSE_INIT_USER_PASSWORD`).
 
 ## Gotchas
 

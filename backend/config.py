@@ -88,12 +88,16 @@ CLICKHOUSE = {
 LANGFUSE = {
     "public_key": env("LANGFUSE_PUBLIC_KEY"),
     "secret_key": env("LANGFUSE_SECRET_KEY"),
-    # SDK ingestion host. In Docker this is the internal service (langfuse-web:3000).
-    "host": env("LANGFUSE_HOST", "http://localhost:3000"),
-    # Browser-facing base for trace LINKS. The SDK bakes `host` into get_trace_url(), but a
-    # container-internal host (langfuse-web:3000) can't be opened from the host browser — so
-    # trace URLs are rewritten to this. Defaults to `host` (correct for a host venv run).
-    "public_host": env("LANGFUSE_PUBLIC_HOST") or env("LANGFUSE_HOST", "http://localhost:3000"),
+    # SDK ingestion host. Defaults to the team's ONE shared self-hosted Langfuse, same as
+    # docker-compose.yml — a per-machine instance meant a trace recorded on one machine 404'd
+    # when read from another (independent servers, nothing synced). Override to
+    # http://langfuse-web:3000 only if you opted into a local COMPOSE_PROFILES=self-hosted-langfuse
+    # instance and are running the backend inside that same compose network.
+    "host": env("LANGFUSE_HOST", "https://traces.kangasys.com"),
+    # Browser-facing base for trace LINKS. Defaults equal to `host` — traces.kangasys.com is
+    # already browser-reachable, so there is no internal/external split to make unless you are
+    # running the local self-hosted profile (langfuse-web:3000 is container-only).
+    "public_host": env("LANGFUSE_PUBLIC_HOST") or env("LANGFUSE_HOST", "https://traces.kangasys.com"),
     # Publish every investigation trace so its URL opens without a Langfuse login. The trace
     # link is a scored deliverable ("no trace, no credit"), and a judge who has to sign up
     # lands in their own empty org and sees "You do not have access to this trace" - which is

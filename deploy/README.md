@@ -20,6 +20,27 @@ Bedrock narration authenticates through the same instance profile, so there are 
 keys anywhere in the deployment. Rotating a secret is: update the SSM parameter, reboot. Nothing
 to rebuild, nothing to edit on the host.
 
+## This box IS the shared Langfuse
+
+Every teammate's laptop points at `https://traces.kangasys.com` by default (see the root
+`docker-compose.yml` header) instead of running its own self-hosted Langfuse — a per-machine
+instance meant a trace recorded on one machine 404'd when read from another (independent
+servers, no shared trace database). This EC2 host is the one place that *does* run the real
+`langfuse-*` containers, which is why its `.env` needs two things a laptop's does not:
+
+```
+COMPOSE_PROFILES=self-hosted-langfuse   # actually start langfuse-web/worker/postgres/... here
+LANGFUSE_HOST=http://langfuse-web:3000  # backend talks to them directly, not back out over HTTPS
+```
+
+`bootstrap.sh` writes both into `/opt/clickathon/.env` on a fresh instance. **If you're updating
+an already-running instance** (rather than launching a new one), add these two lines to
+`/opt/clickathon/.env` by hand before `git pull && systemctl restart clickathon` — without them,
+the restart stops enforcing the `self-hosted-langfuse` profile, the six `langfuse-*` containers
+don't come back up, and the backend (defaulting like everyone else's to the external
+`https://traces.kangasys.com`) tries to reach the thing IT is supposed to be serving. Tracing
+breaks stack-wide until both lines are added.
+
 ## Parameters
 
 | Name | Type |

@@ -1,17 +1,29 @@
 # One-command stack for the RCA analyst.
 #
-#   cp .env.example .env          # fill CLICKHOUSE_* (Langfuse dev keys are pre-filled)
+#   cp .env.example .env          # fill CLICKHOUSE_* and LANGFUSE_PUBLIC_KEY/SECRET_KEY
 #   docker compose up --build
 #
 # Surfaces:  dashboard http://localhost:5173 · backend http://localhost:8000/health
-#            Langfuse  http://localhost:3000  · LibreChat http://localhost:3080
+#            LibreChat http://localhost:3080
 #
-# ClickHouse for the RCA data stays EXTERNAL (Cloud, via .env). Langfuse is self-hosted v3, which
-# runs its OWN infra (postgres + clickhouse + redis + minio) — separate from the RCA Cloud CH.
+# ClickHouse for the RCA data stays EXTERNAL (Cloud, via .env). Langfuse ALSO stays external by
+# default: this backend talks to the team's ONE shared self-hosted Langfuse at
+# https://traces.kangasys.com, not a fresh instance per machine. That is deliberate — Langfuse
+# packaged here (the langfuse-* services below) previously meant every `docker compose up`
+# minted an INDEPENDENT instance with its own trace database, so a trace recorded on one
+# machine 404'd when read from another (same YAML, unrelated servers, nothing synced). One
+# shared instance fixes that the same way the external ClickHouse already does.
+#
+# The langfuse-* services still exist for teams/individuals who want a fully local, offline
+# instance instead of the shared one — they are gated behind the `self-hosted-langfuse` PROFILE
+# and do NOT start on a bare `docker compose up`. Opt in with:
+#   COMPOSE_PROFILES=self-hosted-langfuse docker compose up --build
+# and in .env set BOTH LANGFUSE_HOST and LANGFUSE_PUBLIC_HOST to http://localhost:3000, so the
+# backend (and the self-seeded langfuse-web login redirect) point at your own copy instead of
+# the shared one — leaving only LANGFUSE_HOST set would point ingestion at your local instance
+# while trace LINKS still opened the shared one's UI.
+#
 # docker-compose.override.yml (mounts librechat.yaml into `api`) is auto-merged by compose.
-#
-# NOTE: this is a heavy stack (~9 services). First `up` pulls the Langfuse ClickHouse/MinIO
-# images and runs migrations — give it a few minutes before the UI answers on :3000.
 
 # Shared Langfuse v3 infra env, used by BOTH langfuse-web and langfuse-worker (kept DRY via anchor).
 # Dev secrets are for a throwaway local stack — regenerate before exposing beyond localhost.
@@ -52,20 +64,17 @@ services:
       # lets a different slice be swapped in without rebuilding.
       - ./InMobi:/app/InMobi:ro
     environment:
-      # SDK ingests to the internal service name; trace LINKS use the browser-facing host, since
-      # the host browser can't resolve langfuse-web. Without the split, "Open trace" dead-links.
-      LANGFUSE_HOST: http://langfuse-web:3000
-      # Browser-facing, so it must be an address the VIEWER can resolve. Defaults to localhost
-      # for laptop runs; a deployed host sets LANGFUSE_PUBLIC_HOST to its own public address
-      # (deploy/bootstrap.sh does this automatically). Left as localhost on a server, every
-      # "Open trace" link a judge clicks points at their own machine and dead-ends.
-      LANGFUSE_PUBLIC_HOST: ${LANGFUSE_PUBLIC_HOST:-http://localhost:3000}
-      # Publish traces so their URLs open without a Langfuse login. Safe here (synthetic demo
-      # data); publishing is irreversible, so leave it off against anything real.
+      # Defaults to the team's ONE shared self-hosted Langfuse — see the header comment for why
+      # a per-machine instance (the old default) broke cross-environment trace links. Override to
+      # http://langfuse-web:3000 in .env if you opted into COMPOSE_PROFILES=self-hosted-langfuse.
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-https://traces.kangasys.com}
+      # Browser-facing, so it must be an address the VIEWER can resolve. Same shared host by
+      # default, since https://traces.kangasys.com is already browser-reachable — no internal/
+      # external split needed once Langfuse isn't running as a container-only service.
+      LANGFUSE_PUBLIC_HOST: ${LANGFUSE_PUBLIC_HOST:-https://traces.kangasys.com}
+      # Publish traces so their URLs open without a Langfuse login. Publishing is irreversible —
+      # leave off unless you specifically want a trace shareable with someone who can't log in.
       LANGFUSE_PUBLISH_TRACES: ${LANGFUSE_PUBLISH_TRACES:-false}
-    depends_on:
-      langfuse-web:
-        condition: service_started
     restart: unless-stopped
 
   # ---- Dashboard: Vite build served by nginx. API/LibreChat URLs are baked at build time
@@ -126,6 +135,7 @@ services:
   # .env, so tracing works with zero manual UI setup.
   langfuse-web:
     image: langfuse/langfuse:3
+    profiles: ["self-hosted-langfuse"]
     depends_on:
       langfuse-postgres:
         condition: service_healthy
@@ -157,6 +167,7 @@ services:
 
   langfuse-worker:
     image: langfuse/langfuse-worker:3
+    profiles: ["self-hosted-langfuse"]
     depends_on:
       langfuse-postgres:
         condition: service_healthy
@@ -172,6 +183,7 @@ services:
 
   langfuse-postgres:
     image: postgres:16-alpine
+    profiles: ["self-hosted-langfuse"]
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
@@ -187,6 +199,7 @@ services:
 
   langfuse-clickhouse:
     image: clickhouse/clickhouse-server:24.3
+    profiles: ["self-hosted-langfuse"]
     user: "101:101"
     environment:
       CLICKHOUSE_DB: default
@@ -205,6 +218,7 @@ services:
 
   langfuse-redis:
     image: redis:7-alpine
+    profiles: ["self-hosted-langfuse"]
     command: redis-server --requirepass dev-langfuse-redis-change-me --maxmemory-policy noeviction
     healthcheck:
       test: ["CMD-SHELL", "redis-cli -a dev-langfuse-redis-change-me ping | grep -q PONG"]
@@ -215,6 +229,7 @@ services:
 
   langfuse-minio:
     image: minio/minio
+    profiles: ["self-hosted-langfuse"]
     entrypoint: sh
     # Pre-create the bucket dir (path-style) so event uploads have somewhere to land.
     command: -c 'mkdir -p /data/langfuse && minio server --address ":9000" --console-address ":9001" /data'
