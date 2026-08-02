@@ -24,7 +24,13 @@ from pathlib import Path
 
 from data import store
 from models import EvidenceBundle, Window
-from narrator.tracing import investigation_trace, narration_span, score_trace, stamp_trace_verdict
+from narrator.tracing import (
+    investigation_trace,
+    narration_span,
+    phase,
+    score_trace,
+    stamp_trace_verdict,
+)
 
 log = logging.getLogger(__name__)
 
@@ -159,7 +165,10 @@ def run_detection(
         # The detectors are hour-grain; a chat window is usually a whole day. Scan the day's hours
         # and report the worst one, so we surface the planted anomaly rather than whatever sits at
         # midnight. `detect` is called per hour via the same chosen method.
-        anomaly, queries, hour, segment = _scan_window(metric, window, detector)
+        with phase("detect", input={"metric": metric, "detector": detector or "default"}) as p:
+            anomaly, queries, hour, segment = _scan_window(metric, window, detector)
+            p.verdict(detected=anomaly.detected, observed=anomaly.observed, expected=anomaly.expected,
+                      score=anomaly.score, direction=anomaly.direction, segment=segment)
         bundle = _detection_bundle(investigation_id, metric, hour, anomaly, queries, detector)
         # Record WHERE it was found. Empty = the move is population-wide, which is a real
         # finding in its own right (e.g. the Jun 21 collapse), not a missing localization.
