@@ -7,6 +7,7 @@ import {
   formatDisplay,
   parseIsoDate,
   shiftMonth,
+  toIsoDate,
   todayIso,
 } from "./DateField.utils";
 
@@ -14,17 +15,28 @@ type Props = {
   value: string;
   onChange: (iso: string) => void;
   "aria-label": string;
+  /** Inclusive ISO (YYYY-MM-DD) bounds. Days outside are rendered disabled and month
+   *  navigation stops at the edges, so only dates the dataset actually covers are pickable. */
+  min?: string;
+  max?: string;
 };
 
 type PopPos = { top: number; left: number };
 
-export function DateField({ value, onChange, "aria-label": ariaLabel }: Props) {
+export function DateField({ value, onChange, "aria-label": ariaLabel, min, max }: Props) {
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState<PopPos>({ top: 0, left: 0 });
   const parsed = parseIsoDate(value);
+  // ISO YYYY-MM-DD sorts lexicographically, so plain string compares are correct here.
+  const outOfRange = (iso: string) => (!!min && iso < min) || (!!max && iso > max);
   const [view, setView] = useState(() => {
+    // Open on the selected date, else on the first in-range month rather than today's — with a
+    // bounded range, landing on an all-disabled month reads as broken.
+    if (parsed) return { y: parsed.y, m: parsed.m };
+    const fallback = parseIsoDate(min ?? "") ?? parseIsoDate(max ?? "");
+    if (fallback) return { y: fallback.y, m: fallback.m };
     const now = new Date();
-    return { y: parsed?.y ?? now.getFullYear(), m: parsed?.m ?? now.getMonth() + 1 };
+    return { y: now.getFullYear(), m: now.getMonth() + 1 };
   });
   const rootRef = useRef<HTMLDivElement>(null);
   const popRef = useRef<HTMLDivElement>(null);
@@ -87,7 +99,17 @@ export function DateField({ value, onChange, "aria-label": ariaLabel }: Props) {
   const label = formatDisplay(value);
   const placeholder = "dd · mm · yyyy";
 
+  // Stop paging once the whole adjacent month sits outside the range — the arrow would
+  // otherwise walk forever through months with nothing selectable in them.
+  const prev = shiftMonth(view.y, view.m, -1);
+  const next = shiftMonth(view.y, view.m, 1);
+  const monthEnd = (y: number, m: number) => toIsoDate(y, m, new Date(y, m, 0).getDate());
+  const canGoPrev = !min || monthEnd(prev.y, prev.m) >= min;
+  const canGoNext = !max || toIsoDate(next.y, next.m, 1) <= max;
+  const todayPickable = !outOfRange(todayIso());
+
   const pick = (iso: string) => {
+    if (outOfRange(iso)) return; // defensive: disabled cells shouldn't fire, but never accept one
     onChange(iso);
     setOpen(false);
   };
@@ -115,6 +137,7 @@ export function DateField({ value, onChange, "aria-label": ariaLabel }: Props) {
                   type="button"
                   className="date-nav-btn"
                   aria-label="Previous month"
+                  disabled={!canGoPrev}
                   onClick={() => setView((v) => shiftMonth(v.y, v.m, -1))}
                 >
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
@@ -125,6 +148,7 @@ export function DateField({ value, onChange, "aria-label": ariaLabel }: Props) {
                   type="button"
                   className="date-nav-btn"
                   aria-label="Next month"
+                  disabled={!canGoNext}
                   onClick={() => setView((v) => shiftMonth(v.y, v.m, 1))}
                 >
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
@@ -143,6 +167,7 @@ export function DateField({ value, onChange, "aria-label": ariaLabel }: Props) {
             <div className="date-grid" role="grid">
               {cells.map((cell) => {
                 const selected = cell.iso === value;
+                const disabled = outOfRange(cell.iso);
                 return (
                   <button
                     key={cell.iso}
@@ -153,9 +178,12 @@ export function DateField({ value, onChange, "aria-label": ariaLabel }: Props) {
                       cell.inMonth ? "" : "is-outside",
                       cell.isToday ? "is-today" : "",
                       selected ? "is-selected" : "",
+                      disabled ? "is-disabled" : "",
                     ].filter(Boolean).join(" ")}
                     aria-label={cell.iso}
                     aria-selected={selected}
+                    aria-disabled={disabled}
+                    disabled={disabled}
                     onClick={() => pick(cell.iso)}
                   >
                     {cell.day}
@@ -168,7 +196,13 @@ export function DateField({ value, onChange, "aria-label": ariaLabel }: Props) {
               <button type="button" className="date-foot-btn" onClick={() => { onChange(""); setOpen(false); }}>
                 Clear
               </button>
-              <button type="button" className="date-foot-btn" onClick={() => pick(todayIso())}>
+              <button
+                type="button"
+                className="date-foot-btn"
+                disabled={!todayPickable}
+                title={todayPickable ? undefined : "Today is outside the available data range"}
+                onClick={() => pick(todayIso())}
+              >
                 Today
               </button>
             </div>

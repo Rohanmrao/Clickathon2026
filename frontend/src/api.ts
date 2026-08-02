@@ -1,31 +1,12 @@
 import type { EvidenceBundle, Health, InvestigationRow } from "./types";
-import sampleBundle from "./sample_bundle.json";
 
 const API = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
 
-export interface InvestigateResult {
-  bundle: EvidenceBundle;
-  live: boolean; // false => the backend was unreachable and we fell back to the bundled sample
-}
-
-/** Run an investigation. Returns the bundle WITHOUT a narrative (that's the second step, narrate()).
- *  Fixtures-first: if the API is unreachable we fall back to the sample so the UI always renders. */
-export async function investigate(
-  metric = "revenue",
-  window?: { start: string; end: string },
-): Promise<InvestigateResult> {
-  try {
-    const res = await fetch(`${API}/investigate`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ metric, window: window ?? null }),
-    });
-    if (!res.ok) throw new Error(String(res.status));
-    return { bundle: (await res.json()) as EvidenceBundle, live: true };
-  } catch {
-    return { bundle: sampleBundle as EvidenceBundle, live: false };
-  }
-}
+// NOTE: there is deliberately no `investigate()` helper here anymore. It POSTed /investigate and,
+// on any failure, returned fixtures/sample_bundle.json — invented numbers rendered as though they
+// were a real diagnosis. The dashboard's Investigate button drives the seed flow
+// (startRangeInvestigation) instead, and an empty dashboard now says so rather than showing a
+// sample. Don't reintroduce a fixture fallback: showing fake evidence is worse than showing none.
 
 /** Add prose to a stored investigation. Returns the narrated bundle, or null if narration is
  *  unavailable (no LLM creds / Bedrock down) — the numbers are already complete either way. */

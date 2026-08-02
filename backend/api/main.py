@@ -64,16 +64,16 @@ def health() -> dict:
 
 @app.post("/investigate", response_model=EvidenceBundle)
 def investigate(req: InvestigateRequest) -> EvidenceBundle:
-    """Run an investigation, persist the bundle, and return it WITHOUT a narrative.
+    """Run an investigation and return it WITHOUT a narrative. Never writes to `bundles`.
 
-    This is the ONE non-seed path that may write to `bundles` — it is the dashboard's
-    Investigate button. No other API endpoint passes persist=True; the chat path and all
-    other callers stay at the default False.
-
-    No LLM sits in this path, so a judge can call it twice and diff the result to verify
-    reproducibility. Narration is POST /narrate/{id}.
+    `bundles` is seed-path-only — dev.py's seed_bundles/seed_context are the only writers.
+    The dashboard's Investigate button now drives POST /dev/seed_bundles, not this endpoint, so
+    this stays a pure compute-and-return: no LLM in the path, so a judge (or anyone) can call it
+    twice and diff the result to verify reproducibility, without side effects on the stored
+    anomaly history. Narration is POST /narrate/{id} (also non-persisting unless explicitly
+    asked, which nothing does).
     """
-    bundle = pipeline.run_investigation(req.metric, req.window, persist=True)
+    bundle = pipeline.run_investigation(req.metric, req.window, persist=False)
     # Mirror the segment-scope override from dev.py seed_bundles: if global detection
     # didn't fire but localization found a segment, the anomaly is real — promote it.
     if not bundle.anomaly.detected and bundle.localized_segment:
@@ -220,11 +220,14 @@ def _run_investigation(
 ) -> EvidenceBundle:
     """Real detection (statistical/ML) for the bundle, then trace-reattached narration.
 
-    `pipeline.run_detection` runs REAL ClickHouse detection via the chosen method and persists an
-    un-narrated bundle; `pipeline.narrate_investigation` then adds prose whose generation span
-    reattaches to the same trace. The two-step split (JAL-80) means a Bedrock failure costs the
-    sentence, not the whole scoreable bundle. session_id groups the conversation's traces in
-    Langfuse; segment localization awaits Lane B's decompose/drill.
+    Computed and returned, NEVER persisted: `bundles` is seed-path-only (dev.py's seed_bundles /
+    seed_context are its only writers), so neither call below passes persist=True. A chat answer
+    must not add rows to the stored anomaly history — asking a question is not an investigation
+    of record. `narrate_investigation` therefore finds nothing to load and returns None, which
+    the `or bundle` fallback handles; that is the designed path, not a failure.
+
+    session_id groups the conversation's traces in Langfuse; segment localization awaits
+    Lane B's decompose/drill.
     """
     window = Window(start=slots.window_start, end=slots.window_end or slots.window_start)
     bundle = pipeline.run_detection(

@@ -224,6 +224,40 @@ body {
   margin: 0 auto;
   align-items: stretch;
 }
+
+/* Nothing investigated yet — one centred card instead of the two-column evidence layout. */
+.main-grid--empty {
+  grid-template-columns: minmax(0, 1fr);
+  place-items: center;
+  overflow: auto;
+}
+.empty-state {
+  max-width: var(--base-528, 33rem);
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--all-gap-s);
+  padding: var(--all-padding-xl);
+}
+.empty-title {
+  margin: 0;
+  font-size: var(--font-size-l, 1.25rem);
+  font-weight: 600;
+  color: var(--content-display-text-title-main);
+}
+.empty-body {
+  margin: 0;
+  line-height: 1.6;
+  color: var(--content-display-text-body-main);
+}
+.empty-hint {
+  margin: 0;
+  font-size: var(--font-size-s, 0.85rem);
+  line-height: 1.5;
+  color: var(--content-display-text-caption-dimmed);
+}
+
 .col-left {
   display: flex;
   flex-direction: column;
@@ -1080,6 +1114,26 @@ body {
 .date-day.is-selected:hover {
   background: var(--bg-secondary-hovered);
   color: var(--on-accent);
+}
+/* Outside the loaded dataset — visibly unavailable, and no hover affordance suggesting
+   otherwise. Listed after .is-selected/.is-outside so it wins over both. */
+.date-day.is-disabled,
+.date-day.is-disabled:hover {
+  color: var(--content-display-text-caption-dimmed);
+  background: none;
+  border-color: transparent;
+  opacity: 0.3;
+  cursor: not-allowed;
+  text-decoration: line-through;
+}
+.date-nav-btn:disabled,
+.date-nav-btn:disabled:hover,
+.date-foot-btn:disabled,
+.date-foot-btn:disabled:hover {
+  opacity: 0.35;
+  cursor: not-allowed;
+  background: none;
+  color: var(--content-display-text-caption-dimmed);
 }
 
 .date-popover-foot {

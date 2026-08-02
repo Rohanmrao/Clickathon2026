@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import { getBundle, getHealth, getTrace, listBundles, listIncidents, startRangeInvestigation, waitForRangeInvestigation, type IncidentRow } from "./api";
-import sampleBundle from "./sample_bundle.json";
 import { AnomalyCard } from "./components/AnomalyCard";
 import { DiagnosisCard } from "./components/DiagnosisCard";
 import { FactorSplit } from "./components/FactorSplit";
@@ -17,8 +16,25 @@ import type { EvidenceBundle, InvestigationRow } from "./types";
 const TRACE_SNAPSHOT_DELAY_MS = 10000;
 // Engine status is a live condition, so re-poll it rather than trusting page load.
 const HEALTH_POLL_MS = 30000;
+// Survives the post-seed reload so the fresh finding is what gets showcased, not the biggest.
+const SHOWCASE_KEY = "rca-showcase-id";
+
+// Read and consume the handoff at MODULE load, not inside the mount effect. StrictMode
+// double-invokes effects in dev, so consuming it there let the second pass see null, fall back
+// to "biggest move", and overwrite the first pass's selection — the fresh finding never showed.
+// Module scope evaluates exactly once per page load, so both passes read the same value.
+const SEEDED_SHOWCASE_ID = (() => {
+  const id = sessionStorage.getItem(SHOWCASE_KEY);
+  sessionStorage.removeItem(SHOWCASE_KEY); // one-shot: a later manual reload shows the biggest
+  return id;
+})();
 
 const METRICS = ["revenue", "fill_rate", "ecpm", "requests", "ctr", "rpr", "render_rate"];
+
+// Bounds of the loaded dataset. Picking outside this range can only ever sweep empty hours, so
+// the calendar refuses it up front instead of returning a confusing "no anomalies found".
+const DATA_MIN_DATE = "2026-06-01";
+const DATA_MAX_DATE = "2026-07-10";
 
 function incidentLabel(row: IncidentRow): string {
   const date = row.window_start?.slice(5, 10) ?? "";
@@ -35,10 +51,13 @@ function incidentLabel(row: IncidentRow): string {
 }
 
 export default function App() {
-  const [bundle, setBundle] = useState<EvidenceBundle>(sampleBundle as EvidenceBundle);
+  // Null until a real stored bundle loads. The dashboard used to seed this with
+  // fixtures/sample_bundle.json, which rendered invented numbers that looked exactly like a real
+  // diagnosis — the one thing this tool must never do. Empty state instead; see the JSX below.
+  const [bundle, setBundle] = useState<EvidenceBundle | null>(null);
+  const [booting, setBooting] = useState(true); // distinguishes "still loading" from "nothing there"
   const [incidents, setIncidents] = useState<IncidentRow[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [source, setSource] = useState<"fixture" | "live">("fixture");
   const [engine, setEngine] = useState<"live" | "fixture" | "offline" | null>(null); // from /health
   const [running, setRunning] = useState(false);
   const [step, setStep] = useState<number>(99); // drill-down reveal cursor
@@ -46,7 +65,7 @@ export default function App() {
   const [theme, setTheme] = useState<"dark" | "light">(
     () => (localStorage.getItem("rca-theme") as "dark" | "light") || "dark"
   );
-  const [metric, setMetric] = useState<string>((sampleBundle as EvidenceBundle).metric || "revenue");
+  const [metric, setMetric] = useState<string>("revenue");
   const [winStart, setWinStart] = useState("");
   const [winEnd, setWinEnd] = useState("");
   const [history, setHistory] = useState<InvestigationRow[]>([]);
@@ -63,22 +82,42 @@ export default function App() {
     localStorage.setItem("rca-theme", theme);
   }, [theme]);
 
-  const fd = bundle.factor_decomposition;
-  const depth = bundle.drilldown.length + 1; // + root
-  const pctLabel = `${bundle.anomaly.pct_delta < 0 ? "−" : "+"}${Math.abs(bundle.anomaly.pct_delta * 100).toFixed(1)}%`;
+  const fd = bundle?.factor_decomposition;
+  const depth = (bundle?.drilldown.length ?? 0) + 1; // + root
+  const pctLabel = bundle
+    ? `${bundle.anomaly.pct_delta < 0 ? "−" : "+"}${Math.abs(bundle.anomaly.pct_delta * 100).toFixed(1)}%`
+    : "";
 
   const refreshHistory = () => listBundles(15).then(setHistory);
 
   // On mount: report the real engine status, load past investigations, and load the stored
   // anomaly list — showcasing the biggest move first so the headline card is never a flat run.
+  // Exception: right after a seed run the page reloads itself, and the id it left in
+  // sessionStorage wins, so the reload lands on what was just found rather than the biggest.
   useEffect(() => {
     getHealth().then((h) => h && setEngine(h.engine));
     refreshHistory();
+    const justSeeded = SEEDED_SHOWCASE_ID;
     listIncidents().then((rows) => {
       rows.sort((a, b) => Math.abs(b.pct_delta) - Math.abs(a.pct_delta));
       setIncidents(rows);
-      if (rows.length) selectIncident(rows[0].investigation_id);
-    });
+      // Anomalies exist → show the first (biggest) one. None → leave `bundle` null and let the
+      // empty state tell the user to run an investigation, rather than inventing a sample.
+      const showId = (justSeeded && rows.some((r) => r.investigation_id === justSeeded))
+        ? justSeeded
+        : rows[0]?.investigation_id;
+      if (!showId) {
+        setBooting(false);
+        return;
+      }
+      const isFresh = justSeeded === showId;
+      selectIncident(showId, isFresh);
+      // Warm the trace snapshot. Reading /trace is what persists it to ClickHouse, and
+      // Langfuse ingests spans asynchronously — so wait for the worker, then read once.
+      if (isFresh) {
+        window.setTimeout(() => void getTrace(showId), TRACE_SNAPSHOT_DELAY_MS);
+      }
+    }).catch(() => setBooting(false));
     // Re-check health on a timer. Engine status is a live condition, not a page-load fact: a
     // single cold/slow probe used to latch the "offline" banner until the next investigation,
     // long after the database was healthy again.
@@ -93,16 +132,24 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const selectIncident = (id: string) => {
+  // `reveal` animates the drill-down instead of showing it already solved — used only for a
+  // bundle that was just seeded, so the post-reload landing still reads as a search.
+  const selectIncident = (id: string, reveal = false) => {
     setSelectedId(id);
-    getBundle(id).then((b) => {
-      if (b) {
-        setBundle(b);
-        setMetric(b.metric);
-        setSource("live");
-        setStep(99);
-      }
-    });
+    getBundle(id)
+      .then((b) => {
+        if (b) {
+          setBundle(b);
+          setMetric(b.metric);
+          if (reveal) {
+            setRunning(true); // revealSteps clears this when the walk finishes
+            revealSteps(b);
+          } else {
+            setStep(99);
+          }
+        }
+      })
+      .finally(() => setBooting(false));
   };
 
   // Reveal the drill-down one node at a time so the localization reads as a search, not a jump.
@@ -137,32 +184,23 @@ export default function App() {
 
   // The windowed flow: same server code path as dev's "Find anomalies" + "Seed bundles".
   // Idempotent server-side — anomalies already in `bundles` are skipped, only new ones seed.
+  //
+  // When the job finishes we reload the page once rather than patching state in place. The seed
+  // writes a whole batch of new bundles server-side, and a full reload is the one refresh that
+  // is guaranteed to pick up every one of them (switcher, history, engine status, trace links)
+  // instead of whatever subset a hand-written re-fetch remembered to update. The bundle to
+  // showcase is handed across the reload in sessionStorage, so we still land on the fresh
+  // finding rather than defaulting to the biggest historical move.
   const runRange = async (start: string, end: string) => {
     try {
       const jobId = await startRangeInvestigation(start, end);
       if (!jobId) return; // backend unreachable — leave the current view alone
       const result = await waitForRangeInvestigation(jobId);
-      const rows = await listIncidents();
-      rows.sort((a, b) => Math.abs(b.pct_delta) - Math.abs(a.pct_delta));
-      setIncidents(rows);
-      refreshHistory();
-      // Showcase the freshest seeded bundle if the job reported one, else the biggest move.
       const fresh = result?.bundles.find((x) => x.investigation_id && !x.skipped && !x.error);
-      const showId = fresh?.investigation_id ?? rows[0]?.investigation_id;
-      if (showId) {
-        const b = await getBundle(showId);
-        if (b) {
-          setBundle(b);
-          setSelectedId(showId);
-          setMetric(b.metric);
-          setSource("live");
-          revealSteps(b);
-        }
-        // Warm the trace snapshot. Reading /trace is what persists it to ClickHouse, and
-        // Langfuse ingests spans asynchronously — so wait for the worker, then read once.
-        window.setTimeout(() => void getTrace(showId), TRACE_SNAPSHOT_DELAY_MS);
+      if (fresh?.investigation_id) {
+        sessionStorage.setItem(SHOWCASE_KEY, fresh.investigation_id);
       }
-      getHealth().then((h) => h && setEngine(h.engine)); // reflect offline/live after the run
+      window.location.reload();
     } finally {
       setRunning(false);
     }
@@ -176,7 +214,6 @@ export default function App() {
       setBundle(b);
       setSelectedId(id);
       setMetric(b.metric);
-      setSource("live");
       setRunning(false);
       setStep(99);
     }
@@ -193,7 +230,7 @@ export default function App() {
       return "—";
     }
   };
-  const shortId = bundle.investigation_id ? bundle.investigation_id.slice(0, 8) : "inc_4471";
+  const shortId = bundle?.investigation_id ? bundle.investigation_id.slice(0, 8) : null;
 
   return (
     <div className="app spacing-default effect-smooth">
@@ -203,7 +240,7 @@ export default function App() {
           <div className="brand-titles">
             <span className="brand-name">RCA analyst</span>
             <span className="brand-sub">
-              {source === "live" ? "live · clickhouse bundles" : "fixtures/sample_bundle.json"} · {shortId}
+              {shortId ? `live · clickhouse bundles · ${shortId}` : "no investigation loaded"}
             </span>
           </div>
         </div>
@@ -243,8 +280,20 @@ export default function App() {
             <select value={metric} onChange={(e) => setMetric(e.target.value)} aria-label="Metric">
               {METRICS.map((m) => <option key={m} value={m}>{m}</option>)}
             </select>
-            <DateField value={winStart} onChange={setWinStart} aria-label="Window start" />
-            <DateField value={winEnd} onChange={setWinEnd} aria-label="Window end" />
+            <DateField
+              value={winStart}
+              onChange={setWinStart}
+              aria-label="Window start"
+              min={DATA_MIN_DATE}
+              max={DATA_MAX_DATE}
+            />
+            <DateField
+              value={winEnd}
+              onChange={setWinEnd}
+              aria-label="Window end"
+              min={winStart || DATA_MIN_DATE}
+              max={DATA_MAX_DATE}
+            />
           </div>
           {selectedId && (
             <button className="ghost-btn" onClick={() => setTraceOpen(true)}>Open trace</button>
@@ -263,12 +312,37 @@ export default function App() {
 
       {engine === "offline" && (
         <div className="offline-banner" role="status">
-          <span className="offline-dot" /> Data store offline — showing sample data. Check
+          <span className="offline-dot" /> Data store offline — no investigations can be loaded or
+          run. Check
           <code> CLICKHOUSE_* </code> in <code>.env</code>, then recreate the backend
           (<code>docker compose up -d backend</code>).
         </div>
       )}
 
+      {!booting && !bundle ? (
+        <main className="main-grid main-grid--empty">
+          <section className="card empty-state" role="status">
+            <span className="eyebrow">No anomalies stored yet</span>
+            <h2 className="empty-title">Nothing has been investigated yet</h2>
+            <p className="empty-body">
+              Pick a <strong>start</strong> and <strong>end</strong> date in the toolbar above, then
+              hit <strong>Investigate</strong>. Every metric is swept globally and per segment; each
+              real anomaly found is saved here with its evidence, drill-down and SQL.
+            </p>
+            <p className="empty-hint">
+              Data covers {DATA_MIN_DATE} → {DATA_MAX_DATE}. Already-investigated windows are
+              skipped, so re-running is safe.
+            </p>
+          </section>
+        </main>
+      ) : !bundle ? (
+        <main className="main-grid main-grid--empty">
+          <section className="card empty-state" role="status">
+            <span className="eyebrow">Loading</span>
+            <p className="empty-body">Fetching stored investigations…</p>
+          </section>
+        </main>
+      ) : (
       <main className="main-grid">
         <section className="col-left">
           <AnomalyCard
@@ -288,7 +362,7 @@ export default function App() {
             }}
           >
             <DiagnosisCard narrative={bundle.narrative} />
-            <FactorSplit factors={fd.factors} primary={fd.primary_factor} totalPct={pctLabel} />
+            <FactorSplit factors={fd?.factors ?? []} primary={fd?.primary_factor ?? ""} totalPct={pctLabel} />
             <div className="split-nav" onClick={(e) => e.stopPropagation()}>
               <button
                 className={`split-arrow ${activePanel === "factor" ? "is-active" : ""}`}
@@ -346,6 +420,7 @@ export default function App() {
           <SidebarDock history={history} onOpenRun={openRun} onRefresh={refreshHistory} segOf={segOf} bundleId={selectedId} />
         </aside>
       </main>
+      )}
 
       <SweepDrawer
         open={sweepOpen}
@@ -363,7 +438,7 @@ export default function App() {
 
       <TraceDrawer
         investigationId={selectedId}
-        traceUrl={bundle.trace_url}
+        traceUrl={bundle?.trace_url}
         open={traceOpen}
         onClose={() => setTraceOpen(false)}
       />
