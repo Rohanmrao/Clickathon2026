@@ -1399,3 +1399,14 @@ body {
   color: var(--content-display-text-title-main);
   font-weight: 700;
 }
+
+/* The incident switcher grew with its label (4-dimension localizations) until it overlapped the
+   brand mark. Cap it and let the action group shrink instead of pushing left over the logo. */
+.topbar-actions { flex: 0 1 auto; min-width: 0; }
+.incident-select {
+  max-width: var(--base-236);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.brand { flex: 0 1 auto; }

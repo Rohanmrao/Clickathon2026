@@ -245,8 +245,12 @@ def list_dashboard(limit: int = 50, since: datetime | None = None) -> dict:
     Pass `since` (the `created_at` of the newest row already shown) to fetch only what's new
     since the last poll instead of re-pulling the whole list every tick.
     """
-    rows = store.list_dashboard(limit, since)
-    return {"count": len(rows), "incidents": rows}
+    # Scoped to the dataset under investigation. `bundles` holds every investigation ever run,
+    # so an unscoped feed left dev-era incidents (requests -43.5% on Jun 21) in the switcher
+    # while the dashboard was pointed at the streamed slice.
+    within = store.dataset_bounds(target_hourly())
+    rows = store.list_dashboard(limit, since, within=within)
+    return {"count": len(rows), "incidents": rows, "dataset": dataset_name("target")}
 
 
 # ---------------------------------------------------------------------------

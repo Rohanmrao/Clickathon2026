@@ -20,6 +20,7 @@ import logging
 import os
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Any
 
@@ -71,28 +72,32 @@ def _detect_batch(metrics: list[str], method: str, start: datetime, end: datetim
     # streamed hour look "not present in series". The fitted model is deliberately kept.
     isolation_forest.invalidate_series()
 
-    hits, scored = [], []
     window = Window(start=start, end=end)
-    for metric in metrics:
-        if (start, metric) in skip:          # already inferred on in an earlier run
-            continue
+    todo = [m for m in metrics if (start, m) not in skip]
+
+    def score_one(metric: str) -> dict | None:
         try:
             anomaly, _queries = detect(metric, window, method=method)
         except Exception as exc:  # noqa: BLE001 - one bad metric must not kill the stream
             log.warning("stream: detect(%s) failed at %s: %s", metric, start, exc)
-            continue
-        with _lock:
-            _state["checks"] += 1
-        row = {
+            return None
+        return {
             "metric": metric, "hour": start, "method": method, "detected": anomaly.detected,
             "observed": round(anomaly.observed, 4), "expected": round(anomaly.expected, 4),
             "pct_delta": round(anomaly.pct_delta, 4), "score": round(anomaly.score, 3),
             "direction": anomaly.direction,
         }
-        scored.append(row)
-        if anomaly.detected:
-            hits.append(row)
-    return hits, scored
+
+    # Metrics are independent, and each is a DB round trip plus a model score — run them
+    # concurrently. Sequentially this was the whole tick budget (~4.3s for 7 metrics); in
+    # parallel a tick costs about one metric. Safe since the ClickHouse client no longer binds
+    # a session (see data.client.get_client).
+    with ThreadPoolExecutor(max_workers=len(todo) or 1) as pool:
+        scored = [r for r in pool.map(score_one, todo) if r is not None]
+
+    with _lock:
+        _state["checks"] = _state.get("checks", 0) + len(scored)
+    return [r for r in scored if r["detected"]], scored
 
 
 def _investigate(metric: str, start: datetime, end: datetime, method: str, session: str) -> str | None:

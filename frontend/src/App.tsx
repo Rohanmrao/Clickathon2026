@@ -31,7 +31,9 @@ function incidentLabel(row: IncidentRow): string {
   try {
     const parsed = JSON.parse(row.localized_segment || "{}");
     const vals = Object.values(parsed);
-    if (vals.length) seg = ` · ${vals.join(", ")}`;
+    // Cap the segment list: a 4-dimension localization made the option so wide the control
+    // overlapped the brand mark. The full segment is still on the card and in the tree.
+    if (vals.length) seg = ` · ${vals.slice(0, 2).join(", ")}${vals.length > 2 ? "…" : ""}`;
   } catch {
     /* not JSON — leave the label unsegmented */
   }
