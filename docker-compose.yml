@@ -65,8 +65,13 @@ services:
     build:
       context: ./frontend
       args:
-        VITE_API_URL: http://localhost:8000
-        VITE_LIBRECHAT_URL: http://localhost:3080
+        # Vite inlines these at BUILD time, and they are HOST-BROWSER URLs — so they must be
+        # whatever the viewer can reach, not what the container can reach. Default to localhost
+        # for laptop runs; a deployed host sets them in .env (deploy/bootstrap.sh does this).
+        # Hardcoded here, a deployed dashboard calls http://localhost:8000 from the judge's own
+        # machine and every request fails with "Backend unreachable".
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
+        VITE_LIBRECHAT_URL: ${VITE_LIBRECHAT_URL:-http://localhost:3080}
     ports:
       - "5173:80"
     depends_on:

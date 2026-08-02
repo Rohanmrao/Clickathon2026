@@ -72,7 +72,11 @@ LANGFUSE_BASE_URL=http://${PUBLIC_IP}:3000
 AWS_REGION=$(get bedrock/region)
 BEDROCK_MODEL_ID=$(get bedrock/model_id)
 
+# Baked into the dashboard at BUILD time and resolved by the VIEWER's browser, so these must
+# be publicly reachable addresses. Left at the compose default of localhost, a judge opening the
+# dashboard gets "Backend unreachable" because their own machine has nothing on :8000.
 VITE_API_URL=http://${PUBLIC_IP}:8000
+VITE_LIBRECHAT_URL=http://${PUBLIC_IP}:3080
 EOF
 chown root:root "$APP/.env"; chmod 600 "$APP/.env"
 
