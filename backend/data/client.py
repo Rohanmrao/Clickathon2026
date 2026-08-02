@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
-from functools import lru_cache
 from typing import Any
 
 import clickhouse_connect
@@ -13,32 +13,49 @@ from obs import langfuse
 
 log = logging.getLogger(__name__)
 
+_local = threading.local()
 
-@lru_cache(maxsize=1)
+
 def get_client():
-    """One memoized, pooled client reused across all queries.
+    """One memoized, pooled client PER THREAD, reused across queries on that thread.
 
-    clickhouse-connect clients hold an internal (thread-safe) connection pool, so reusing a single
-    client avoids a fresh TLS handshake per query — the dominant cost when firing many small queries
-    (e.g. the benchmarker). Call get_client.cache_clear() to force a reconnect.
+    A clickhouse-connect Client cannot run two queries at once — the FastAPI sync endpoints run
+    in a threadpool AND long jobs (seed_bundles, discover, mega, the stream replay) spin up their
+    own background thread, so a single process-wide client (the old @lru_cache(maxsize=1)) throws
+    "Attempt to execute concurrent queries within the same session" the moment two of those
+    threads query at the same time — e.g. the dashboard's own health poll firing mid-sweep. One
+    client per thread keeps the pooling benefit (no fresh TLS handshake per query within a thread)
+    while removing the cross-thread collision entirely. Call get_client.cache_clear() to force the
+    CURRENT thread to reconnect.
 
-    autogenerate_session_id=False is what makes that sharing safe. The connection POOL is
-    thread-safe, but the driver binds every query to one generated session_id, and ClickHouse
-    rejects concurrent queries within a single session — "Attempt to execute concurrent queries
-    within the same session". That surfaced the moment the streaming job ran queries from its
-    background thread while the dashboard polled /stream/status and /dashboard from request
-    threads, killing the stream two batches in. Nothing here needs session state (no temporary
-    tables, no session-scoped settings), so not binding one is the fix rather than a workaround.
+    autogenerate_session_id=False layers on top of that. Per-thread clients already avoid the
+    collision, but the driver otherwise binds each client to its own generated session_id, so a
+    process with many worker threads accumulates that many server-side sessions for no benefit —
+    and any future code that does share a client across threads would resurrect the same error.
+    Nothing here needs session state (no temporary tables, no session-scoped settings).
+    Measured: 8 threads x 6 queries on ONE shared client gives 7 errors with a session bound and
+    0 without.
     """
-    return clickhouse_connect.get_client(
-        host=CLICKHOUSE["host"],
-        port=CLICKHOUSE["port"],
-        username=CLICKHOUSE["username"],
-        password=CLICKHOUSE["password"],
-        database=CLICKHOUSE["database"],
-        secure=True,
-        autogenerate_session_id=False,
-    )
+    client = getattr(_local, "client", None)
+    if client is None:
+        client = clickhouse_connect.get_client(
+            host=CLICKHOUSE["host"],
+            port=CLICKHOUSE["port"],
+            username=CLICKHOUSE["username"],
+            password=CLICKHOUSE["password"],
+            database=CLICKHOUSE["database"],
+            secure=True,
+            autogenerate_session_id=False,
+        )
+        _local.client = client
+    return client
+
+
+def _clear_client_cache() -> None:
+    _local.client = None
+
+
+get_client.cache_clear = _clear_client_cache
 
 
 def clickhouse_available() -> bool:

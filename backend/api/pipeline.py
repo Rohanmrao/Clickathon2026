@@ -89,12 +89,18 @@ def run_investigation(
     metric: str,
     window: Window | None = None,
     session_id: str | None = None,
+    persist: bool = False,
 ) -> EvidenceBundle:
-    """Run one investigation end to end: trace it, build it, persist it.
+    """Run one investigation end to end: trace it, build it, optionally persist it.
 
     Returns the bundle WITHOUT a narrative. Narration is a separate call (JAL-80) so the UI can
     show real numbers in ~2s, and so an LLM failure cannot destroy an otherwise complete and
     scoreable bundle.
+
+    `persist` defaults to False and is intentionally NOT exposed by any API endpoint —
+    `bundles` must only ever be written to from the seeding path (api/dev.py::seed_bundles /
+    seed_context), which is the only code that calls this with persist=True. POST /investigate
+    computes and returns a bundle for the caller to look at; it does not add a row.
     """
     from data.client import clickhouse_available
 
@@ -131,8 +137,10 @@ def run_investigation(
         bundle.created_at = datetime.now()
         bundle.trace_url = trace.url
         stamp_trace_verdict(bundle)
-        # Only persist when the datastore is reachable; an offline run is in-memory only.
-        if data_up:
+        # Only persist when explicitly asked AND the datastore is reachable — see docstring:
+        # `bundles` is seed-path-only, so every non-seed caller leaves persist=False and this
+        # never runs for them.
+        if persist and data_up:
             store.save_bundle(bundle, trace_id=trace.trace_id, session_id=session_id)
 
     return bundle
@@ -147,14 +155,19 @@ def run_detection(
     window: Window,
     method: str | None = None,
     session_id: str | None = None,
+    persist: bool = False,
 ) -> EvidenceBundle:
     """Detection-grade investigation for the chat: REAL detection from ClickHouse via the chosen
-    method, traced and persisted. Returns the bundle WITHOUT a narrative - the chat adds prose via
-    narrate_investigation(), so the generation span reattaches to this trace and an LLM failure
-    cannot destroy a valid bundle (the same investigate/narrate split as run_investigation).
+    method, traced, optionally persisted. Returns the bundle WITHOUT a narrative - the chat adds
+    prose via narrate_investigation(), so the generation span reattaches to this trace and an LLM
+    failure cannot destroy a valid bundle (the same investigate/narrate split as run_investigation).
 
     Runs only the parts implemented today: detection.detect(). Segment localization (decompose/
     drill) is left EMPTY rather than faked - honest is the whole point.
+
+    `persist` defaults to False — see run_investigation's docstring, same seed-path-only rule.
+    The chat endpoint never passes True, so a chat-triggered investigation is computed and
+    returned but never added to `bundles`.
     """
     from rca.detection import detect
 
@@ -176,7 +189,8 @@ def run_detection(
         bundle.narrative = None  # investigate/narrate split; narrate_investigation adds prose
         bundle.narrative_verification = None
         bundle.trace_url = trace.url
-        store.save_bundle(bundle, trace_id=trace.trace_id, session_id=session_id)
+        if persist:
+            store.save_bundle(bundle, trace_id=trace.trace_id, session_id=session_id)
 
     return bundle
 
@@ -246,8 +260,13 @@ def _detection_bundle(investigation_id, metric, window, anomaly, queries, detect
     )
 
 
-def narrate_investigation(investigation_id: str) -> EvidenceBundle | None:
+def narrate_investigation(investigation_id: str, persist: bool = False) -> EvidenceBundle | None:
     """Add prose to a stored bundle. Returns None if the investigation does not exist.
+
+    Reading the bundle to narrate it is unrestricted (`bundles` reads are fine from anywhere);
+    `persist` gates only the WRITE-back of the narrated result, defaulting False for the same
+    seed-path-only reason as run_investigation/run_detection. A bundle that was never persisted
+    (any non-seed caller) has nothing to load here and this returns None — by design, not a bug.
 
     Three things this must guarantee, in order of importance:
 
@@ -300,5 +319,6 @@ def narrate_investigation(investigation_id: str) -> EvidenceBundle | None:
                     investigation_id, bundle.narrative_verification.unverified_numbers,
                 )
 
-    store.save_bundle(bundle, trace_id=trace_id, session_id=session_id)
+    if persist:
+        store.save_bundle(bundle, trace_id=trace_id, session_id=session_id)
     return bundle

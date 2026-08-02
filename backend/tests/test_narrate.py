@@ -155,13 +155,24 @@ def test_unknown_investigation_returns_none(wired, monkeypatch):
     assert pipeline.narrate_investigation("nope") is None
 
 
-def test_narrated_bundle_is_persisted(wired, monkeypatch):
+def test_narrated_bundle_is_persisted_when_asked(wired, monkeypatch):
+    _stub_llm(monkeypatch, prose="done")
+
+    pipeline.narrate_investigation("inv-1", persist=True)
+
+    assert wired["saved"][0]["bundle"].narrative == "done"
+    assert wired["saved"][0]["trace_id"] == "trace-xyz"
+
+
+def test_narrated_bundle_is_not_persisted_by_default(wired, monkeypatch):
+    """Same lockdown contract as run_investigation/run_detection: `bundles` writes are
+    seed-path-only. POST /narrate/{id} and the chat narration step both rely on this default
+    rather than passing persist=True."""
     _stub_llm(monkeypatch, prose="done")
 
     pipeline.narrate_investigation("inv-1")
 
-    assert wired["saved"][0]["bundle"].narrative == "done"
-    assert wired["saved"][0]["trace_id"] == "trace-xyz"
+    assert wired["saved"] == []
 
 
 def test_narrating_preserves_the_session_link(wired, monkeypatch):
@@ -171,7 +182,7 @@ def test_narrating_preserves_the_session_link(wired, monkeypatch):
     GET /chat/sessions/{id} then reported no investigations at all."""
     _stub_llm(monkeypatch)
 
-    pipeline.narrate_investigation("inv-1")
+    pipeline.narrate_investigation("inv-1", persist=True)
 
     assert wired["saved"][0]["session_id"] == "ctx-session-7"
 

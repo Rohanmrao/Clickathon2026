@@ -74,7 +74,7 @@ _BARE_MONTH = re.compile(
     r"\b(january|february|march|april|may|june|july|august|september|october|november|december"
     r"|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\b", re.I)
 
-Intent = Literal["scan", "investigate", "followup", "greeting", "replay"]
+Intent = Literal["scan", "investigate", "followup", "greeting", "replay", "baseline"]
 _GREETINGS = {"hi", "hey", "hello", "yo", "thanks", "thank you", "ok", "okay"}
 _SCAN_HINTS = ("what's wrong", "whats wrong", "anything wrong", "any issues", "any incidents",
                "what happened", "show me incidents", "list incidents", "anomalies")
@@ -92,6 +92,14 @@ _REPLAY_HINTS = ("replay", "walk me through", "walk through", "end to end", "end
                  "how was this investigated", "how did the investigation",
                  "how did you investigate", "how did you localize", "how did you localise",
                  "go through the investigation")
+# "what were the normal values that day", "what's typical", "how does this compare to baseline".
+# The anomaly bundle only knows ITS OWN window — answering this needs a different query (the
+# surrounding days in `bundles`), which is exactly the case main._handle_chat routes separately.
+_BASELINE_HINTS = ("normal value", "normal values", "on a normal day", "typical value",
+                    "typical values", "usual value", "usual values", "baseline value",
+                    "baseline values", "compare to normal", "compare to baseline",
+                    "other days", "surrounding days", "how does this compare", "what's typical",
+                    "whats typical", "what is typical")
 
 
 # ---- OpenAI wire types -----------------------------------------------------
@@ -226,8 +234,10 @@ def classify(request: ChatCompletionRequest, slots: Slots) -> Intent:
     message = request.last_user_message().lower().strip(" ?!.")
     if message in _GREETINGS:
         return "greeting"
-    # Replay outranks investigate: "replay the fill rate anomaly" names a metric, which would
-    # otherwise satisfy the investigate slots and trigger a fresh (redundant) detection run.
+    # Baseline/replay both outrank investigate: naming a metric ("normal fill rate values")
+    # would otherwise satisfy the investigate slots and trigger a fresh, unwanted detection run.
+    if any(hint in message for hint in _BASELINE_HINTS):
+        return "baseline"
     if any(hint in message for hint in _REPLAY_HINTS):
         return "replay"
     if any(hint in message for hint in _SCAN_HINTS):

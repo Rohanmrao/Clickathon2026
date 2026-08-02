@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { getBundle, getHealth, getStreamStatus, getTrace, investigate, listBundles, listIncidents,
-         narrate, setDataset, startStream, stopStream, type IncidentRow, type StreamStatus } from "./api";
+import { getBundle, getHealth, getStreamStatus, getTrace, listBundles, listIncidents,
+         setDataset, startRangeInvestigation, startStream, stopStream, waitForRangeInvestigation,
+         type IncidentRow, type StreamStatus } from "./api";
 import sampleBundle from "./sample_bundle.json";
 import { AnomalyCard } from "./components/AnomalyCard";
 import { DiagnosisCard } from "./components/DiagnosisCard";
@@ -179,34 +180,49 @@ export default function App() {
     }, 620);
   };
 
-  // Run: investigate (numbers) -> reveal drill-down -> narrate (prose arrives after, per the
-  // investigate/narrate split). A window is sent only if both dates are set, else the backend
-  // discovers the anomalous window itself.
-  const run = async (
-    forMetric: string = metric,
-    win: { start: string; end: string } | undefined =
-      winStart && winEnd ? { start: `${winStart}T00:00:00`, end: `${winEnd}T00:00:00` } : undefined,
-  ) => {
+  // Run: exactly the dev tool's "Find anomalies" + "Seed bundles from these findings", called as
+  // one job. Requires an explicit date range picked in the topbar first — no implicit fallback
+  // range, so the button stays disabled until both dates are set (see the JSX below).
+  const run = async (win?: { start: string; end: string }) => {
+    const target = win ?? (winStart && winEnd
+      ? { start: `${winStart}T00:00:00`, end: `${winEnd}T00:00:00` }
+      : null);
+    if (!target) return; // button is disabled for this case, but guard anyway
     setRunning(true);
-    const { bundle: b, live } = await investigate(forMetric, win);
-    setBundle(b);
-    setSelectedId(b.investigation_id || null);
-    setSource(live ? "live" : "fixture");
-    revealSteps(b);
-    if (live && b.investigation_id) {
-      const narrated = await narrate(b.investigation_id);
-      if (narrated) setBundle(narrated); // fills the Diagnosis card
+    await runRange(target.start, target.end);
+  };
+
+  // The windowed flow: same server code path as dev's "Find anomalies" + "Seed bundles".
+  // Idempotent server-side — anomalies already in `bundles` are skipped, only new ones seed.
+  const runRange = async (start: string, end: string) => {
+    try {
+      const jobId = await startRangeInvestigation(start, end);
+      if (!jobId) return; // backend unreachable — leave the current view alone
+      const result = await waitForRangeInvestigation(jobId);
+      const rows = await listIncidents();
+      rows.sort((a, b) => Math.abs(b.pct_delta) - Math.abs(a.pct_delta));
+      setIncidents(rows);
+      refreshHistory();
+      // Showcase the freshest seeded bundle if the job reported one, else the biggest move.
+      const fresh = result?.bundles.find((x) => x.investigation_id && !x.skipped && !x.error);
+      const showId = fresh?.investigation_id ?? rows[0]?.investigation_id;
+      if (showId) {
+        const b = await getBundle(showId);
+        if (b) {
+          setBundle(b);
+          setSelectedId(showId);
+          setMetric(b.metric);
+          setSource("live");
+          revealSteps(b);
+        }
+        // Warm the trace snapshot. Reading /trace is what persists it to ClickHouse, and
+        // Langfuse ingests spans asynchronously — so wait for the worker, then read once.
+        window.setTimeout(() => void getTrace(showId), TRACE_SNAPSHOT_DELAY_MS);
+      }
+      getHealth().then((h) => { if (h) { setEngine(h.engine); setDatasetState(h.dataset?.target ?? null); } });
+    } finally {
+      setRunning(false);
     }
-    // Warm the trace snapshot. Reading /trace is what persists it to ClickHouse, and Langfuse
-    // ingests spans asynchronously — so wait for the worker, then read once. Without this the
-    // history only survives for investigations someone happened to open the drawer on.
-    if (live && b.investigation_id) {
-      const id = b.investigation_id;
-      window.setTimeout(() => void getTrace(id), TRACE_SNAPSHOT_DELAY_MS);
-    }
-    getHealth().then((h) => { if (h) { setEngine(h.engine); setDatasetState(h.dataset?.target ?? null); } });
-    refreshHistory();
-    listIncidents().then(setIncidents); // a fresh detected anomaly joins the switcher too
   };
 
   // Re-open a stored investigation from the history list (already narrated, fully revealed).
@@ -303,7 +319,12 @@ export default function App() {
           <button className="ghost-btn" onClick={onStartStream} disabled={stream?.status === "running"}>
             {stream?.status === "running" ? "Streaming…" : "Start stream"}
           </button>
-          <button className="primary-btn" onClick={() => run()} disabled={running}>
+          <button
+            className="primary-btn"
+            onClick={() => run()}
+            disabled={running || !winStart || !winEnd}
+            title={!winStart || !winEnd ? "Pick a start and end date first" : undefined}
+          >
             {running ? "Investigating…" : "Investigate"}
           </button>
         </div>
@@ -407,7 +428,9 @@ export default function App() {
         onInvestigate={(m, ws, we) => {
           setSweepOpen(false);
           setMetric(m);
-          run(m, { start: ws, end: we });
+          setWinStart(ws.slice(0, 10));
+          setWinEnd(we.slice(0, 10));
+          run({ start: ws, end: we });
         }}
       />
 

@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from functools import lru_cache
 from typing import Any
 
@@ -143,6 +143,30 @@ def load_latest_anomaly(metric: str | None = None) -> EvidenceBundle | None:
         parameters={"m": metric} if metric else {},
     ).result_rows
     return EvidenceBundle.model_validate_json(rows[0][0]) if rows else None
+
+
+def load_nearby_bundles(
+    metric: str, center_start: datetime, center_end: datetime,
+    days: int = 7, exclude_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """Every stored `bundles` row for `metric` within `days` of [center_start, center_end] —
+    seeded context rows (mostly is_anomaly=0) plus any other anomalies nearby. This is how the
+    chat answers "what were normal values that day": the anomaly bundle itself only knows its
+    own window, so a genuinely different question needs a different query, not a re-read of the
+    same JSON. Ordered chronologically so a reply can describe the walk up to and past the event.
+    """
+    lo = _naive(center_start) - timedelta(days=days)
+    hi = _naive(center_end) + timedelta(days=days)
+    exclude = "AND investigation_id != {ex:String}" if exclude_id else ""
+    result = get_client().query(
+        f"SELECT investigation_id, window_start, window_end, direction, observed, expected, "
+        f"pct_delta, is_anomaly FROM {BUNDLES} FINAL "
+        f"WHERE metric = {{m:String}} AND window_start >= {{lo:DateTime}} "
+        f"AND window_start <= {{hi:DateTime}} {exclude} "
+        f"ORDER BY window_start",
+        parameters={"m": metric, "lo": lo, "hi": hi, **({"ex": exclude_id} if exclude_id else {})},
+    )
+    return [dict(zip(result.column_names, r)) for r in result.result_rows]
 
 
 def load_trace_id(investigation_id: str) -> str | None:

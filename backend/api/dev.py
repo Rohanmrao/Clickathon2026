@@ -192,7 +192,7 @@ def localize(metric: str, start: str, end: str) -> dict:
 
 
 def discover(start: str, end: str, grain: str = "day", scope: str = "both", min_effect: float = 0.0,
-            method: str = "robust_z") -> dict:
+            method: str = "isolation_forest") -> dict:
     """Find anomalies in an ARBITRARY window — no ground-truth case list involved.
 
     This is what the fixed benchmark cases can't do: point it at any date range (e.g. the
@@ -410,15 +410,35 @@ def _run_engine_job(job_id: str) -> None:
         _JOBS[job_id].update(status="error", finished=True, log=str(exc))
 
 
-def seed_bundles(start: str, end: str, method: str = "robust_z") -> dict:
+def _bundle_exists(metric: str, window: Window) -> bool:
+    """A `bundles` row already covering this exact metric+window — regardless of is_anomaly, so
+    a previously-seeded 'checked, normal' row also counts as already done, not just a hit."""
+    rows = get_client().query(
+        "SELECT 1 FROM bundles FINAL WHERE metric = {m:String} "
+        "AND window_start = {s:DateTime} AND window_end = {e:DateTime} LIMIT 1",
+        parameters={"m": metric, "s": window.start, "e": window.end},
+    ).result_rows
+    return bool(rows)
+
+
+def seed_bundles(start: str, end: str, method: str = "isolation_forest") -> dict:
     """Run discover, then a FULL investigation (decompose + drill + narrate + persist) for each
     primary incident — one Evidence Bundle per real anomaly, stored in `bundles` for the
     dashboard's anomaly switcher. Echo/secondary rows are skipped: they are the same underlying
-    incident seen from another angle, and each would otherwise burn a full pipeline run."""
+    incident seen from another angle, and each would otherwise burn a full pipeline run.
+
+    Idempotent: a (metric, exact window) pair already present in `bundles` is skipped rather than
+    re-investigated — re-running this over the same range doesn't create duplicate rows with
+    fresh ids for events already seeded, it only fills in genuinely new findings."""
     from api import pipeline as pipe
 
-    found = discover(start, end, method=method)
-    seeded, skipped = [], 0
+    try:
+        found = discover(start, end, method=method)
+    except Exception as exc:  # noqa: BLE001 — a failed sweep must surface, not vanish as a bare job error
+        return {"seeded": 0, "errors": 1, "already_present": 0, "echoes_skipped": 0,
+                "bundles": [{"error": f"sweep failed before any incident could be investigated: {exc}"}]}
+
+    seeded, skipped, already_present = [], 0, 0
     for row in found["incidents"]:
         if row["role"] != "primary":
             skipped += 1
@@ -426,27 +446,41 @@ def seed_bundles(start: str, end: str, method: str = "robust_z") -> dict:
         metric = incidents.base_metric(row["metric"])
         window = Window(start=datetime.fromisoformat(row["window_start"]),
                         end=datetime.fromisoformat(row["window_end"]))
+        if _bundle_exists(metric, window):
+            already_present += 1
+            seeded.append({"metric": metric, "window": row["window_start"],
+                           "scope": row.get("scope"), "skipped": "already in bundles"})
+            continue
         try:
-            b = pipe.run_investigation(metric, window)
+            b = pipe.run_investigation(metric, window, persist=True)
             # Segment-scoped incidents were detected by the SEGMENT sweep; the bundle's global
             # window-grain re-score is diluted by construction (the APAC/iOS 18.1 drop is -51%
-            # in-segment but ~-1% globally). The sweep's verdict is the true one — carry it.
-            if row.get("scope") == "segment" and not b.anomaly.detected:
+            # in-segment but ~-1% globally), so a weak/undetected global re-score alone must not
+            # be trusted to overrule the sweep. But the sweep's own flag isn't enough evidence
+            # either — measured live: 3 of an earlier 8 seeded "anomalies" (two render_rate moves
+            # with z≈0, one ecpm move below the calibrated threshold) got promoted this way with
+            # NOTHING for drill() to find, because they were never real. The corroborating
+            # evidence that's actually trustworthy is drill() independently finding a genuine
+            # concentrated culprit (b.localized_segment non-empty) — every real segment-diluted
+            # case checked (fill_rate/Android 15, fill_rate/APAC+iOS 18.1, ecpm/finance) clears
+            # this with contribution/lift far past threshold; none of the 3 false positives could
+            # have, since a globally-flat move has no segment with disproportionate lift.
+            if row.get("scope") == "segment" and not b.anomaly.detected and b.localized_segment:
                 b.anomaly.detected = True
                 from data import store as _store
                 _store.save_bundle(b, *_store.load_meta(b.investigation_id))
-            pipe.narrate_investigation(b.investigation_id)
+            pipe.narrate_investigation(b.investigation_id, persist=True)
             seeded.append({"investigation_id": b.investigation_id, "metric": metric,
                            "window": row["window_start"], "scope": row.get("scope"),
                            "localized": b.localized_segment, "detected": b.anomaly.detected})
         except Exception as exc:  # noqa: BLE001 — one bad incident must not sink the batch
             seeded.append({"metric": metric, "window": row["window_start"], "error": str(exc)})
-    return {"seeded": len([s for s in seeded if "error" not in s]),
+    return {"seeded": len([s for s in seeded if "error" not in s and "skipped" not in s]),
             "errors": len([s for s in seeded if "error" in s]),
-            "echoes_skipped": skipped, "bundles": seeded}
+            "already_present": already_present, "echoes_skipped": skipped, "bundles": seeded}
 
 
-def start_seed_job(start: str, end: str, method: str = "robust_z") -> dict:
+def start_seed_job(start: str, end: str, method: str = "isolation_forest") -> dict:
     """8+ full investigations (each: detect + decompose + drill + LLM narrate) takes minutes —
     background job like /discover; poll /dev/jobs/{id}."""
     job_id = uuid4().hex[:8]
@@ -464,8 +498,74 @@ def start_seed_job(start: str, end: str, method: str = "robust_z") -> dict:
     return {"job_id": job_id}
 
 
+def seed_context(days_before: int = 3, days_after: int = 3) -> dict:
+    """Day-grain runs for the days around each ANOMALY already in `bundles`, so "what was normal
+    that week" has real stored numbers to answer from instead of just the one anomalous window.
+    No narrate here (context rows aren't shown as prose) — but decompose/drill DO run, via
+    pipeline.run_investigation, because that scores the whole day as ONE point against its
+    same-weekday baseline (rca.bundle._window_anomaly). detect_in_window (used by the chat path,
+    pipeline.run_detection) instead scans all 24 hours and reports the worst one — appropriate
+    for finding a real incident, but run across every context day it performs 24 hypothesis
+    tests per day and floods the result with false positives (measured: nearly every day fired).
+    A single whole-day test doesn't have that problem.
+
+    Idempotent: a (metric, day) pair already present in `bundles` is skipped, so calling this
+    again after seeding more anomalies only fills in the new gaps.
+    """
+    from api import pipeline as pipe
+
+    anomalies = get_client().query(
+        "SELECT DISTINCT metric, toDate(window_start) AS day FROM bundles FINAL WHERE is_anomaly = 1"
+    ).result_rows
+    existing = {
+        (r[0], r[1]) for r in get_client().query(
+            "SELECT DISTINCT metric, toDate(window_start) AS day FROM bundles FINAL"
+        ).result_rows
+    }
+
+    targets: set[tuple[str, object]] = set()
+    for metric, day in anomalies:
+        for offset in range(-days_before, days_after + 1):
+            if offset == 0:
+                continue
+            target_day = day + timedelta(days=offset)
+            if (metric, target_day) not in existing:
+                targets.add((metric, target_day))
+
+    seeded, errors = [], []
+    for metric, day in sorted(targets, key=lambda t: (t[0], t[1])):
+        window = Window(start=datetime.combine(day, datetime.min.time()),
+                        end=datetime.combine(day, datetime.min.time()) + timedelta(days=1))
+        try:
+            b = pipe.run_investigation(metric, window, persist=True)
+            seeded.append({"metric": metric, "day": day.isoformat(), "is_anomaly": b.anomaly.detected})
+        except Exception as exc:  # noqa: BLE001 — one bad day must not sink the batch
+            errors.append({"metric": metric, "day": day.isoformat(), "error": str(exc)})
+
+    return {"seeded": len(seeded), "errors": len(errors), "already_present": len(existing),
+            "rows": seeded, "error_rows": errors}
+
+
+def start_seed_context_job(days_before: int = 3, days_after: int = 3) -> dict:
+    """One detection call per (metric, day) target — can be dozens of ClickHouse round trips,
+    so background job like /seed_bundles; poll /dev/jobs/{id}."""
+    job_id = uuid4().hex[:8]
+    _JOBS[job_id] = {"status": "running", "log": "", "finished": False, "result": None}
+
+    def _run() -> None:
+        try:
+            result = seed_context(days_before, days_after)
+            _JOBS[job_id].update(status="done", finished=True, result=result,
+                                 log=f"{result['seeded']} context rows seeded, {result['errors']} errors")
+        except Exception as exc:  # noqa: BLE001
+            _JOBS[job_id].update(status="error", finished=True, log=str(exc))
+
+    threading.Thread(target=_run, daemon=True).start()
+    return {"job_id": job_id}
+
+
 def start_discover_job(start: str, end: str, grain: str, scope: str, min_effect: float,
-                       method: str = "robust_z") -> dict:
+                       method: str = "isolation_forest") -> dict:
     """A full segment sweep is ~50 queries (a metric x dimension pass each), so run it in the
     background like /mega rather than holding the request open."""
     job_id = uuid4().hex[:8]
@@ -475,7 +575,7 @@ def start_discover_job(start: str, end: str, grain: str, scope: str, min_effect:
 
 
 def _run_discover_job(job_id: str, start: str, end: str, grain: str, scope: str, min_effect: float,
-                      method: str = "robust_z") -> None:
+                      method: str = "isolation_forest") -> None:
     try:
         result = discover(start, end, grain, scope, min_effect, method)
         _JOBS[job_id].update(status="done", finished=True, result=result,
@@ -603,7 +703,7 @@ class DiscoverReq(BaseModel):
     localization is unaffected — see discover()'s docstring for why."""
     start: str = "2026-06-01"
     end: str = "2026-07-06"
-    method: str = "robust_z"
+    method: str = "isolation_forest"
 
 
 @router.post("/seed_bundles")
@@ -611,6 +711,18 @@ def seed_bundles_endpoint(req: DiscoverReq) -> dict:
     # Same request shape as /discover; runs the full pipeline per primary incident and
     # persists one Evidence Bundle each. Background job; poll /dev/jobs/{id}.
     return start_seed_job(req.start, req.end, method=req.method)
+
+
+class SeedContextReq(BaseModel):
+    days_before: int = 3
+    days_after: int = 3
+
+
+@router.post("/seed_context")
+def seed_context_endpoint(req: SeedContextReq) -> dict:
+    # Detection-only day-grain runs around each anomaly already in `bundles` — the baseline
+    # data chat's "what was normal that day" answers from. Background job; poll /dev/jobs/{id}.
+    return start_seed_context_job(req.days_before, req.days_after)
 
 
 @router.post("/discover")
